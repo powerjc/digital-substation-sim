@@ -1,10 +1,10 @@
 // Lesson content (data). Every number quoted here is checked by
 // sim.test.js; when a test disagrees with the text, fix the text.
 //
-// { id, track, title, zoom: 'trip' | 'heartbeats', setup?(cfg), scenario,
+// { id, track, title, zoom: 'trip' | 'bf' | 'heartbeats', setup?(cfg), scenario,
 //   intro, watch[], tryIt[], takeaway, expect: { verdict } }
 
-export const TRACKS = ['GOOSE basics']
+export const TRACKS = ['GOOSE basics', 'Test mode', 'Two bays']
 
 export const LESSONS = [
   {
@@ -13,7 +13,7 @@ export const LESSONS = [
     title: 'A trip is a message',
     zoom: 'trip',
     scenario: {},
-    intro: 'Line relay 21-AB trips 16.7 ms (1 cycle) after a fault on line A–B. There is no trip wire: the trip travels to breaker IED 52-AB as a GOOSE message through the bay switch.',
+    intro: 'Line relay 21-AB trips 16.7 ms (1 cycle) after a fault on line A–B. There is no trip wire: the trip travels to breaker IED 52-AB as a GOOSE message through the process-bus switch PB.',
     watch: [
       'At the trip, stNum steps from 1 to 2 and sqNum restarts at 0. Repeats follow 2, 4, 8, 16 ms… apart, each carrying a timeAllowedtoLive (TAL) of twice the gap to the next frame.',
       '52-AB acts on the first frame (stNum 2, sqNum 0) and energizes the trip coil at 18.7 ms, 2.03 ms after the trip. The repeats change nothing.',
@@ -41,7 +41,7 @@ export const LESSONS = [
     ],
     tryIt: [
       'Tap 52-AB in the station view and pick a wrong gocbRef, or the re-issued publisher (confRev 2). Now the frames are rejected and the alarm says why (CONFIG).',
-      'Set the subscription back to correct and break the switch instead: tap SW1 and take port 2 out of VLAN 10. The frames never reach 52-AB, and 21-AB loses the Position GOOSE too.',
+      'Set the subscription back to correct and break the switch instead: tap the process-bus switch PB and take port 2 out of VLAN 10. The frames never reach 52-AB, and 21-AB loses the Position GOOSE too.',
     ],
     takeaway: 'The frames were on the wire the whole time. A wrong subscription doesn’t wait for a fault: its alarm stands from the day the configuration was loaded. A wrong APPID or VLAN shows only “no message”; a confRev or name mismatch says what is wrong. Commissioning tests and following up alarms catch it. The fault doesn’t.',
     expect: { verdict: 'notDelivered' },
@@ -52,7 +52,7 @@ export const LESSONS = [
     title: 'One lost frame, and a dead link',
     zoom: 'trip',
     scenario: { drops: [{ link: 'L1', gocb: 'AB.Trip', st: 2, sq: 0 }] },
-    intro: 'The first Trip frame after the trip is lost on link L1, between 21-AB and the switch.',
+    intro: 'The first Trip frame after the trip is lost on link L1, between 21-AB and the process-bus switch.',
     watch: [
       'Frame stNum 2, sqNum 0 dies on L1. The first retransmission (sqNum 1) follows 2 ms later, and 52-AB acts on it.',
       'Transfer time grows from 2.03 ms to 4.03 ms: beyond the 3 ms class for trip messages, though still only about a quarter of a cycle.',
@@ -63,5 +63,122 @@ export const LESSONS = [
     ],
     takeaway: 'Fast repeats after a change make one lost frame cheap. Supervision tells you a link is gone within about two heartbeats, but it is an alarm, not a fix. Redundancy (PRP/HSR, a later slice) is the fix.',
     expect: { verdict: 'late' },
+  },
+  {
+    id: 'left-in-test',
+    track: 'Test mode',
+    title: 'The relay was left in test',
+    zoom: 'trip',
+    setup: cfg => { cfg.features.testMode = true },
+    scenario: { iedMode: { '21-AB': 'test' } },
+    intro: '21-AB was tested this morning and left in test mode. The fault comes, and 21-AB trips 16.7 ms later, as always.',
+    watch: [
+      'Every Trip frame now carries the test flag in its quality (decode one). 52-AB, in normal mode, receives each one and does not use it: “test: not used”.',
+      '52-AB’s Trip subscription stays OK: frames keep arriving within TAL, so supervision has nothing to report. The breaker stays closed.',
+    ],
+    tryIt: [
+      'Tap 52-AB and set its mode to Test as well: the trip is used and the breaker opens at 52.0 ms, as in normal service. Test mode does not stop physical outputs.',
+      'Set 52-AB to Test/blocked: the trip reaches 52-AB’s logic, but its output stays blocked and the coil never energizes. That is how to test end to end without operating the breaker.',
+    ],
+    takeaway: 'An IED left in test is invisible to supervision: its messages arrive on time and are ignored. Only its mode (on its display, the HMI, SCADA) shows it, which is why restoring every IED to “on” is a commissioning step (Foundations D3).',
+    expect: { verdict: 'notDelivered' },
+  },
+  {
+    id: 'left-in-sim',
+    track: 'Test mode',
+    title: 'Left in simulation mode',
+    zoom: 'trip',
+    setup: cfg => { cfg.features.testMode = true },
+    scenario: { testSet: { imitate: 'AB.Trip', tripAt: null }, simMode: ['52-AB'] },
+    intro: '52-AB was tested this morning: a test set on the process bus imitated 21-AB’s trip, and 52-AB was put in simulation mode to listen to it. The test is over, but 52-AB is still in simulation mode, and the test set is still plugged in, publishing a simulated “no trip”.',
+    watch: [
+      'Two Trip messages are on the wire: the real one from 21-AB and the test set’s copy (same name, same APPID, simulation flag set). The test set only sends heartbeats, so switch to the Heartbeats view and decode one of each.',
+      'At the fault, 52-AB ignores the real trip (“real: ignored (sim mode)”): it takes Trip from the test set, which still says no trip. The breaker stays closed.',
+      'No alarm: the test set’s heartbeats keep 52-AB’s Trip subscription OK.',
+    ],
+    tryIt: [
+      'Tap 52-AB and clear Simulation mode: it now ignores the test set (“simulated: ignored”) and opens on the real trip at 52.0 ms.',
+      'Put 52-AB back in simulation mode, then tap the test set and set it to publish nothing (unplugged): with no simulated message to take, 52-AB uses the real trip and opens at 52.0 ms.',
+      'Set the test set back to the simulated Trip and inject a trip 1 s before the fault: 52-AB opens the breaker on the test set alone. That is the test this setup is for: proving the breaker IED’s trip path while 21-AB stays in service.',
+    ],
+    takeaway: 'Simulation mode is the digital test switch left open with the test set still connected: the IED listens to the test set, not to the protection. Supervision can’t see it; only the IED’s mode shows it. Restore means simulation off and the test set unplugged (Foundations D3).',
+    expect: { verdict: 'notDelivered' },
+  },
+  {
+    id: 'bf-stuck',
+    track: 'Two bays',
+    title: 'Breaker failure: the neighbours clear it',
+    zoom: 'bf',
+    setup: cfg => { cfg.features.secondBay = true },
+    scenario: { breakerStuck: ['52-AB'] },
+    intro: 'Bus A now has two lines, A–B and A–X, each with its own relay and breaker IED, all on the same station bus and process bus. The fault is on line A–B, and 52-AB’s mechanism is stuck.',
+    watch: [
+      '21-AB trips at 16.7 ms. 52-AB receives it 2.03 ms later and energizes its trip coil, but the breaker doesn’t move.',
+      '21-AB’s breaker-failure timer runs 8 cycles. At 150.0 ms (9.0 cyc) current is still flowing, so it publishes a BF trip (RBRF1.OpEx) in its own GOOSE.',
+      'The BF trip travels over the process bus to 52-AX, which opens at 185.4 ms (11.1 cyc). Bus A is cleared, and line A–X goes out with it.',
+    ],
+    tryIt: [
+      'Find the BF trip frames in the frame list: a message from bay A–B whose only subscriber is in bay A–X.',
+      'Tap 52-AB and clear “Breaker stuck”: 52-AB opens at 52.0 ms, 21-AB’s trip resets, and breaker failure never operates.',
+    ],
+    takeaway: 'Breaker failure is one more GOOSE, from one bay to the others. It only works if that message, its subscriptions and the path between the bays are right too.',
+    expect: { verdict: 'clearedByBF' },
+  },
+  {
+    id: 'bf-saves-lost-trip',
+    track: 'Two bays',
+    title: 'A lost trip, saved by breaker failure',
+    zoom: 'bf',
+    setup: cfg => { cfg.features.secondBay = true },
+    scenario: { subWrong: { '52-AB.Trip': 'appid' } },
+    intro: 'Lesson 2’s commissioning miss again: 52-AB’s subscription has the wrong APPID. This time bus A has two bays and breaker failure.',
+    watch: [
+      '52-AB ignores every trip frame, and its breaker stays closed.',
+      '21-AB’s breaker failure still sees current at 150.0 ms and sends its BF trip; 52-AX opens at 185.4 ms.',
+    ],
+    tryIt: [
+      'Tap the process-bus switch PB and take port 4 (to 52-AX) out of VLAN 10: the BF trip can no longer reach 52-AX, and nothing at bus A clears the fault.',
+    ],
+    takeaway: 'Breaker failure covers a lost trip too, but later (11 cycles instead of 3) and by taking out the whole bus side. The standing alarm before the fault was the cheaper warning.',
+    expect: { verdict: 'clearedByBF' },
+  },
+  {
+    id: 'one-switch',
+    track: 'Two bays',
+    title: 'One switch, two bays',
+    zoom: 'heartbeats',
+    setup: cfg => { cfg.features.secondBay = true },
+    scenario: { switchDown: { PB: -2.0 } },
+    intro: 'The process-bus switch PB fails 2 s before the fault. Every bay’s trips, positions and breaker-failure trips go through it.',
+    watch: [
+      'Within two seconds every process-bus subscription in both bays goes LOST: six alarms, one per subscription.',
+      'At the fault 21-AB trips, and later sends its BF trip; neither gets past PB. Nothing at bus A clears the fault.',
+    ],
+    tryIt: [
+      'Switch to the Breaker failure view to watch the trip and the BF trip go nowhere.',
+      'Repair PB and fail the station-bus switch SB instead: protection carries on and the breaker opens at 52.0 ms. The station bus carries SCADA’s MMS (not simulated yet), not the trips.',
+    ],
+    takeaway: 'A shared process bus couples bays that copper kept apart: one failed switch silenced both bays’ protection messages at once. Supervision found it within two seconds; a second, parallel network (PRP, the next slice) is how stations avoid it.',
+    expect: { verdict: 'notDelivered' },
+  },
+  {
+    id: 'missing-subscription',
+    track: 'Two bays',
+    title: 'Right in one bay, missing in the other',
+    zoom: 'bf',
+    setup: cfg => { cfg.features.secondBay = true },
+    scenario: { breakerStuck: ['52-AB'], subMissing: ['52-AX.BF-AB'] },
+    intro: 'The signal matrix (Foundations C5) says 52-AX subscribes to 21-AB’s breaker-failure trip, and 52-AB to 21-AX’s. When bay A–X was commissioned, 52-AX’s subscription was never configured. Bay A–B’s side is right. Today 52-AB sticks.',
+    watch: [
+      '21-AB’s BF trip goes out at 150.0 ms, as in the previous lessons. Its frames reach 52-AX, which has no subscription for them and drops them quietly (decode one).',
+      'Nothing opens: the fault is not cleared from bus A.',
+      'No alarm, before or after the fault. 52-AX’s badge for the BF trip reads NONE: there is no subscription, so there is nothing to supervise.',
+    ],
+    tryIt: [
+      'Tap 52-AX and give it the subscription, but with the wrong APPID: still nothing opens, but now 52-AX shows NO MSG from before the run. A wrong subscription alarms; a missing one doesn’t.',
+      'Set the subscription back to “Engineered correctly”: 52-AX opens at 185.4 ms.',
+    ],
+    takeaway: 'Supervision only watches the subscriptions that exist. A subscription that was never configured is the one miss no alarm can find; only checking each IED against the signal matrix, and testing each signal end to end, catches it.',
+    expect: { verdict: 'notCleared' },
   },
 ]

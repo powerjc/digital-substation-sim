@@ -1,26 +1,33 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { simulate, stateAt, EPS } from '../lib/timeline'
 import { EMPTY_SCENARIO, normalizeScenario } from '../lib/scenario'
+import { isActive } from '../lib/features'
 
-// Two fixed views instead of a free zoom: the burst after a change is
+// Fixed views instead of a free zoom: the burst after a change is
 // milliseconds, the heartbeat is seconds.
 export const ZOOMS = {
   trip: { id: 'trip', label: 'Around the trip', t0: -0.005, t1: 0.085, speeds: [0.002, 0.005, 0.02], speed: 0.005 },
+  bf: { id: 'bf', label: 'Breaker failure', t0: -0.01, t1: 0.25, speeds: [0.005, 0.01, 0.05], speed: 0.01, feature: 'secondBay' },
   heartbeats: { id: 'heartbeats', label: 'Heartbeats', t0: -3.0, t1: 2.5, speeds: [0.1, 0.25, 1], speed: 0.25 },
 }
 
+// The views this config offers (the breaker-failure view needs the second bay)
+export const zoomsFor = config => Object.values(ZOOMS).filter(z => !z.feature || isActive(config, z.feature))
+
+// config: the station config (stationConfig(config)), which the engine runs
 export function useRun(config) {
   const [scenario, setScenarioRaw] = useState(EMPTY_SCENARIO)
   const [zoomId, setZoomId] = useState('trip')
   const [time, setTimeRaw] = useState(-Infinity)
   const [playing, setPlaying] = useState(false)
-  const [speeds, setSpeeds] = useState({ trip: ZOOMS.trip.speed, heartbeats: ZOOMS.heartbeats.speed })
+  const [speeds, setSpeeds] = useState(Object.fromEntries(Object.values(ZOOMS).map(z => [z.id, z.speed])))
 
-  const zoom = ZOOMS[zoomId]
+  const zooms = zoomsFor(config)
+  const zoom = zooms.find(z => z.id === zoomId) ?? ZOOMS.trip
   const sim = useMemo(() => simulate(config, scenario), [config, scenario])
   const t = Math.max(zoom.t0, Math.min(time, zoom.t1))
   const { idx, state } = stateAt(sim.events, t)
-  const speed = speeds[zoomId]
+  const speed = speeds[zoom.id]
 
   function rewind() { setTimeRaw(-Infinity); setPlaying(false) }
   function setScenario(fn) { setScenarioRaw(prev => normalizeScenario(typeof fn === 'function' ? fn(prev) : fn)); rewind() }
@@ -66,7 +73,7 @@ export function useRun(config) {
 
   return {
     sim, state, eventIdx: idx, time: t, setTime,
-    zoom, setZoom, playing, togglePlay, speed, setSpeed: s => setSpeeds(p => ({ ...p, [zoomId]: s })),
+    zoom, zooms, setZoom, playing, togglePlay, speed, setSpeed: s => setSpeeds(p => ({ ...p, [zoom.id]: s })),
     stepForward, stepBack, frameForward, frameBack, rewind,
     scenario, setScenario, loadScenario: sc => setScenario(normalizeScenario(sc)),
     atEnd: t >= zoom.t1 - EPS,

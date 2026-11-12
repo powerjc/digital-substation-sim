@@ -10,7 +10,7 @@ export function saveSeen(seen) {
   try { localStorage.setItem(KEY, JSON.stringify([...seen])) } catch { /* storage unavailable */ }
 }
 
-export function LessonMenu({ activeId, seen, onStart, onWelcome }) {
+export function LessonMenu({ activeId, seen, onStart, onWelcome, onTour }) {
   const [open, setOpen] = useState(false)
   return (
     <div className="relative">
@@ -23,8 +23,14 @@ export function LessonMenu({ activeId, seen, onStart, onWelcome }) {
         <div className="absolute right-0 top-11 z-20 w-80 max-w-[calc(100vw-2rem)] max-h-[75vh] overflow-y-auto bg-white border border-gray-200 rounded-xl shadow-lg p-3">
           <button onClick={() => { onWelcome(); setOpen(false) }}
             className="w-full text-left px-2 py-1.5 mb-1 rounded-lg text-sm text-indigo-700 hover:bg-indigo-50">
-            Welcome &amp; how to read the screen
+            Welcome
           </button>
+          {onTour && (
+            <button onClick={() => { onTour(); setOpen(false) }}
+              className="w-full text-left px-2 py-1.5 mb-1 rounded-lg text-sm text-indigo-700 hover:bg-indigo-50">
+              Tour: reading the screen
+            </button>
+          )}
           <p className="text-xs text-gray-400 px-1 mb-2">Starting a lesson resets settings and failures, then sets up what the lesson needs.</p>
           {TRACKS.map(track => (
             <div key={track} className="mb-2">

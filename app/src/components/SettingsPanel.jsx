@@ -32,6 +32,7 @@ export default function SettingsPanel({ config, onFeature, onReset }) {
               <li>IED stack: {config.stack.publishMs} ms to publish, {config.stack.subscribeMs} ms to act on a frame</li>
               <li>Network: {config.network.linkMbps} Mbit/s links, {config.network.switchLatencyUs} µs per switch</li>
               <li>Trip-message class: {TRIP_CLASS.ms} ms ({TRIP_CLASS.name}, IEC 61850-5)</li>
+              {isActive(config, 'secondBay') && <li>Breaker failure: BF trip {config.timing.bfCycles} cycles after the trip if current still flows</li>}
             </ul>
           </div>
           <p className="text-xs text-gray-400">The fault and the relay’s decision are scripted: this simulator is about how signals travel, not why the relay tripped.</p>

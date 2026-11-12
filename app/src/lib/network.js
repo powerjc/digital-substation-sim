@@ -5,10 +5,12 @@
 
 export const PREAMBLE_IFG_BYTES = 20 // preamble + SFD (8) + inter-frame gap (12)
 
-// End point "SW1:2" → { dev: 'SW1', port: 2 }; "21-AB" → { dev: '21-AB', port: null }
+// End point "PB:2" → { dev: 'PB', port: 2 }; "21-AB:P" → { dev: '21-AB', port: 'P' };
+// "52-AB" → { dev: '52-AB', port: null }
 export function parseEnd(s) {
   const [dev, port] = String(s).split(':')
-  return { dev, port: port === undefined ? null : Number(port) }
+  if (port === undefined) return { dev, port: null }
+  return { dev, port: Number.isNaN(Number(port)) ? port : Number(port) }
 }
 
 export function buildTopo(config) {
@@ -52,6 +54,10 @@ const linkIsDown = (scenario, linkId, t) => {
   const d = scenario.linkDown?.[linkId]
   return d !== undefined && d !== null && t >= d - 1e-12
 }
+const switchIsDown = (scenario, sw, t) => {
+  const d = scenario.switchDown?.[sw]
+  return d !== undefined && d !== null && t >= d - 1e-12
+}
 
 const dropped = (scenario, linkId, frame) =>
   (scenario.drops ?? []).some(d => d.link === linkId && d.gocb === frame.gocb && d.st === frame.pdu.stNum && d.sq === frame.pdu.sqNum)
@@ -70,6 +76,8 @@ export function forward(topo, config, scenario, frame, t0) {
   function from(dev, inLink, t) {
     for (const e of topo.adj[dev] ?? []) {
       if (e.link === inLink) continue
+      // A publisher sends a control block only on the port it is bound to
+      if (dev === frame.pub && frame.port && e.port !== frame.port) continue
       if (topo.isSwitch.has(dev)) {
         // Known unicast: only out of the port the address was learned on
         const learned = topo.macTable[dev]?.[frame.dst]
@@ -90,6 +98,12 @@ export function forward(topo, config, scenario, frame, t0) {
       if (linkIsDown(scenario, e.link, t)) {
         hop.fate = 'down'
         lose(e.peer, e.link, `link ${e.link} down`, 'down')
+        continue
+      }
+      const deadSw = [dev, e.peer].find(x => topo.isSwitch.has(x) && switchIsDown(scenario, x, t))
+      if (deadSw) {
+        hop.fate = 'down'
+        lose(e.peer, e.link, `switch ${deadSw} down`, 'down')
         continue
       }
       if (dropped(scenario, e.link, frame)) {

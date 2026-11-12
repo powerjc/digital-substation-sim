@@ -4,6 +4,9 @@ const VERDICT = {
   delivered:    { label: 'Trip delivered',              style: 'bg-green-100 text-green-800 border-green-300' },
   late:         { label: 'Trip delivered late',         style: 'bg-yellow-100 text-yellow-800 border-yellow-300' },
   notDelivered: { label: 'Trip NOT delivered',          style: 'bg-red-100 text-red-800 border-red-300' },
+  clearedByBF:  { label: 'Cleared by breaker failure',  style: 'bg-blue-100 text-blue-800 border-blue-300' },
+  notCleared:   { label: 'Fault NOT cleared at bus A',  style: 'bg-red-100 text-red-800 border-red-300' },
+  openBefore:   { label: 'Breaker opened by the test set', style: 'bg-purple-100 text-purple-800 border-purple-300' },
 }
 const NOTE_STYLE = { info: 'text-gray-600', warn: 'text-yellow-700', bad: 'text-red-700 font-medium' }
 
@@ -60,8 +63,10 @@ export default function OutcomeCard({ outcome, revealed, onReveal }) {
         <>
           <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs">
             {outcome.tripT !== null && <><dt className="text-gray-500">Relay trip</dt><dd className="font-mono">{fmtProt(outcome.tripT, f)}</dd></>}
-            <dt className="text-gray-500">Trip coil</dt><dd className="font-mono">{outcome.coilT !== null ? fmtProt(outcome.coilT, f) : 'never'}</dd>
-            <dt className="text-gray-500">Breaker open</dt><dd className="font-mono">{outcome.openT !== null ? fmtProt(outcome.openT, f) : 'never'}</dd>
+            <dt className="text-gray-500">{outcome.breaker ?? ''} trip coil</dt><dd className="font-mono">{outcome.coilT !== null ? fmtProt(outcome.coilT, f) : 'never'}</dd>
+            <dt className="text-gray-500">{outcome.breaker ?? 'Breaker'} open</dt><dd className="font-mono">{outcome.openT !== null ? fmtProt(outcome.openT, f) : 'never'}</dd>
+            {outcome.bfT !== null && <><dt className="text-gray-500">BF trip</dt><dd className="font-mono">{fmtProt(outcome.bfT, f)}</dd></>}
+            {outcome.bfOpens?.map(o => <span key={o.dev} className="contents"><dt className="text-gray-500">{o.dev} open</dt><dd className="font-mono">{o.t !== null ? fmtProt(o.t, f) : 'never'}</dd></span>)}
           </dl>
           <Budget outcome={outcome} />
           {outcome.notes.length > 0 && (

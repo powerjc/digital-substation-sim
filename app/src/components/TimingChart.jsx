@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { deviceColor, FATE, SUB_STATUS } from '../lib/colors'
+import { HelpLink } from './Help'
 
 // Logic-analyzer style timing chart (adapted from the Line Protection
 // Simulator). Digital traces for device signals, a tick per frame on each
@@ -28,9 +29,14 @@ function segments(events, t0, endT, valueFn) {
   return out
 }
 
-function buildRows(config) {
+function buildRows(config, simCfg) {
   const rows = [{ key: 'fault', label: 'FAULT', type: 'digital', color: '#dc2626', fn: s => s.fault, group: null }]
   for (const d of config.ieds) {
+    if (d.kind === 'testset') {
+      for (const x of simCfg.gocbs.filter(y => y.ied === d.id)) rows.push({ key: `gocb-${x.id}`, label: 'Simulated', type: 'frames', gocb: x.id, color: deviceColor(d.id), group: d.id })
+      continue
+    }
+    if (d.kind !== 'relay' && d.kind !== 'breaker') continue
     const g = d.id, color = deviceColor(d.id)
     const subs = config.subscriptions.filter(s => s.ied === d.id)
     const pubs = config.gocbs.filter(x => x.ied === d.id)
@@ -38,6 +44,7 @@ function buildRows(config) {
     const pubRows = pubs.map(x => ({ key: `gocb-${x.id}`, label: `${x.label} GOOSE`, type: 'frames', gocb: x.id, color, group: g }))
     if (d.kind === 'relay') {
       rows.push({ key: `${g}-trip`, label: 'PTRC trip', type: 'digital', color, fn: s => s.ieds[g].trip, group: g })
+      if (d.bf) rows.push({ key: `${g}-bf`, label: 'BF trip', type: 'digital', color: '#ea580c', fn: s => !!s.ieds[g].bf, group: g })
       rows.push(...pubRows, ...subRows)
       rows.push({ key: `${g}-seen`, label: 'Sees bkr open', type: 'digital', color: '#16a34a', fn: s => s.ieds[g].seenPos === 'off', group: g })
     } else {
@@ -64,7 +71,7 @@ export default function TimingChart({ config, run, selectedFrame, onSelectFrame,
   const { sim, time, zoom, setTime } = run
   const { events, frames } = sim
   const freqHz = config.freqHz
-  const rows = buildRows(config)
+  const rows = buildRows(config, sim.config)
 
   let y = AXIS_H, prevGroup
   const layout = rows.map(r => {
@@ -81,7 +88,7 @@ export default function TimingChart({ config, run, selectedFrame, onSelectFrame,
   const plotW = width - LABEL_W - PAD_R
   const tx = t => LABEL_W + ((t - t0) / span) * plotW
   const now = Math.min(time, t1)
-  const trip = zoom.id === 'trip'
+  const trip = zoom.id !== 'heartbeats'
 
   const stepMs = TICK_STEPS_MS.find(s => (span * 1000) / s <= Math.max(4, Math.floor(plotW / 80))) ?? 1000
   const ticks = []
@@ -106,7 +113,7 @@ export default function TimingChart({ config, run, selectedFrame, onSelectFrame,
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-baseline justify-between gap-2">
-        <h3 className="text-sm font-semibold text-gray-700">Timing</h3>
+        <h3 className="text-sm font-semibold text-gray-700">Timing<HelpLink chapter="B4" /></h3>
         {trip && <span className="text-xs text-gray-400">← 3 s quiet period: see Heartbeats</span>}
       </div>
       {controls && <div className="mb-2">{controls}</div>}
@@ -154,12 +161,13 @@ export default function TimingChart({ config, run, selectedFrame, onSelectFrame,
               )
             }
             if (r.type === 'status') {
-              const segs = segments(events, t0, t1, s => s.subs[r.sub].status).filter(s => s.t0 <= now).map(s => ({ ...s, t1: Math.min(s.t1, now) }))
+              const segs = segments(events, t0, t1, s => s.subs[r.sub]?.status ?? 'none').filter(s => s.t0 <= now).map(s => ({ ...s, t1: Math.min(s.t1, now) }))
               return (
                 <g key={r.key}>
                   {label}
                   {segs.map((s, i) => {
                     const st = SUB_STATUS[s.v]
+                    if (s.v === 'none') return <text key={i} x={tx(s.t0) + 4} y={lo - 2} fontSize={9} fill={st.color}>not configured</text>
                     const ok = s.v === 'healthy'
                     const w = Math.max(0, tx(s.t1) - tx(s.t0))
                     return (

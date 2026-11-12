@@ -1,4 +1,3 @@
-import { ZOOMS } from '../hooks/useRun'
 import { fmtTime } from '../lib/units'
 
 function Btn({ onClick, title, children, primary }) {
@@ -12,12 +11,12 @@ function Btn({ onClick, title, children, primary }) {
 }
 
 export default function SimControls({ run, freqHz }) {
-  const { time, zoom, setZoom, playing, togglePlay, stepForward, stepBack, frameForward, rewind, setTime, speed, setSpeed } = run
+  const { time, zoom, zooms, setZoom, playing, togglePlay, stepForward, stepBack, frameForward, rewind, setTime, speed, setSpeed } = run
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex gap-1 bg-gray-100 rounded-lg p-1" role="group" aria-label="View">
-          {Object.values(ZOOMS).map(z => (
+          {zooms.map(z => (
             <button key={z.id} onClick={() => setZoom(z.id)}
               className={`px-2.5 py-1 text-sm font-semibold rounded-md transition ${zoom.id === z.id ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
               {z.label}
@@ -38,7 +37,7 @@ export default function SimControls({ run, freqHz }) {
         <input type="range" min={zoom.t0} max={zoom.t1} step={(zoom.t1 - zoom.t0) / 2000} value={time}
           onChange={e => setTime(Number(e.target.value))} className="flex-1 min-w-[8rem] h-2" aria-label="Run time" />
         <span className="font-mono text-sm text-gray-700 whitespace-nowrap text-right">
-          t = {fmtTime(time)}{zoom.id === 'trip' && <span className="text-gray-400"> ({(time * freqHz).toFixed(2)} cyc)</span>}
+          t = {fmtTime(time)}{zoom.id !== 'heartbeats' && <span className="text-gray-400"> ({(time * freqHz).toFixed(2)} cyc)</span>}
         </span>
       </div>
     </div>

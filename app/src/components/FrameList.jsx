@@ -42,8 +42,7 @@ export default function FrameList({ config, run, selectedFrame, onSelect, detail
           const g = gocb(f.gocb)
           const future = f.sendT > time + 1e-9
           const sel = f.id === selectedFrame
-          const [subId, rx] = Object.entries(f.rx)[0] ?? []
-          const subIed = config.subscriptions.find(s => s.id === subId)?.ied
+          const rxs = Object.entries(f.rx).map(([subId, rx]) => ({ rx, ied: config.subscriptions.find(s => s.id === subId)?.ied }))
           return (
             <tr key={f.id} ref={f.id === lastSent?.id ? activeRef : null} onClick={() => onSelect(f.id)}
               className={`border-b border-gray-50 cursor-pointer ${sel ? 'bg-indigo-50' : f.id === lastSent?.id ? 'bg-yellow-50' : 'hover:bg-gray-50'} ${future ? 'opacity-35' : ''}`}>
@@ -54,7 +53,9 @@ export default function FrameList({ config, run, selectedFrame, onSelect, detail
               <td className={`px-2 py-1 text-right font-mono ${f.pdu.sqNum === 0 ? 'font-bold' : ''}`}>{f.pdu.stNum}/{f.pdu.sqNum}</td>
               <td className="px-2 py-1 text-right font-mono">{f.pdu.timeAllowedtoLive}</td>
               {detail && <td className="px-2 py-1 text-right font-mono hidden sm:table-cell">{f.length}</td>}
-              <td className="px-2 py-1 whitespace-nowrap">{!future && <><span className="text-gray-400 hidden sm:inline">{subIed} </span><FateBadge rx={rx} /></>}</td>
+              <td className="px-2 py-1 whitespace-nowrap">{!future && rxs.map((x, i) => (
+                <span key={i} className="mr-1"><span className="text-gray-400 hidden sm:inline">{x.ied} </span><FateBadge rx={x.rx} /></span>
+              ))}</td>
             </tr>
           )
         })}

@@ -45,14 +45,14 @@ export function buildFrame({ id, gocb, ied, sendT, changeT, stNum, sqNum, tal, a
     t: changeT,
     stNum,
     sqNum,
-    simulation: !!ied.lphdSim, // mode hook (slice 1.1)
+    simulation: !!ied.simulates, // set by a test set imitating this publisher
     confRev: gocb.confRev,
     ndsCom: false,
     numDatSetEntries: allData.length,
     allData,
   }
   const frame = {
-    id, gocb: gocb.id, pub: ied.id, sendT,
+    id, gocb: gocb.id, pub: ied.id, sendT, port: gocb.port ?? null,
     dst: gocb.mac, src: ied.mac,
     vlan: { id: gocb.vlan.id, priority: gocb.vlan.priority, dei: 0 },
     ethertype: ETHERTYPE_GOOSE,
@@ -116,7 +116,18 @@ export function testDecision(dataTest, subscriberMode) {
     : { use: false, note: 'test data treated as invalid: this IED is in normal mode' }
 }
 
+// Simulated messages (from a test set) are used only by an IED in simulation
+// mode (LPHD.Sim). Not modelled: such an IED then ignoring the real message
+// for that subscription (no test-set device in the simulator yet).
+export function simulationDecision(frameSim, lphdSim) {
+  if (!frameSim) return { use: true, note: null }
+  return lphdSim ? { use: true, note: 'simulated message accepted: this IED is in simulation mode' }
+    : { use: false, note: 'simulated message ignored: this IED is not in simulation mode' }
+}
+
 export function testHandling(ied, frame) {
+  const sim = simulationDecision(frame.pdu.simulation, ied.lphdSim)
+  if (!sim.use) return sim
   const dataTest = frame.pdu.allData.some(d => d.type === 'Quality' && d.value.test)
   return testDecision(dataTest, ied.mode)
 }

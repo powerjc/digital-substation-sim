@@ -6,7 +6,7 @@
 // Units: protection-relevant times in cycles (as the Line Protection
 // Simulator); communication times in ms; network in Mbit/s and µs.
 
-export const SCHEMA_VERSION = 1
+export const SCHEMA_VERSION = 3
 
 // Retransmission profiles. IEC 61850-8-1 leaves the curve to the
 // implementation; these are illustrative. Each frame's timeAllowedtoLive is
@@ -37,7 +37,10 @@ export function defaultConfig() {
       tripResetCycles: 1,   // contacts parted → relay trip resets (current gone)
       auxMoveMs: 15,        // trip coil → Pos leaves "on" (mechanism moving)
       auxSettleMs: 5,       // contacts parted → Pos reads "off"
+      bfCycles: 8,          // breaker failure: trip → BF trip if current still flows (illustrative)
     },
+    // The scripted fault: which line it is on (that line's relay trips)
+    script: { faultLine: 'AB' },
     // Communication stack time in each IED (logic ⇄ wire). Illustrative:
     // roughly the 40 % / 20 % / 40 % split of a 3 ms budget.
     stack: { publishMs: 1.0, subscribeMs: 1.0 },
@@ -45,22 +48,29 @@ export function defaultConfig() {
     goose: { profile: 'typical' },
 
     ieds: [
-      { id: '21-AB', kind: 'relay', bay: 'AB', name: 'LineProtAB', label: 'Line relay',
+      { id: '21-AB', kind: 'relay', bay: 'AB', line: 'AB', name: 'LineProtAB', label: 'Line relay',
         mac: '02-00-00-AB-00-21', mode: 'on', lphdSim: false },
       { id: '52-AB', kind: 'breaker', bay: 'AB', name: 'BkrCtlAB', label: 'Breaker IED',
         mac: '02-00-00-AB-00-52', mode: 'on', lphdSim: false },
+      // Station level: MMS to SCADA (not simulated yet)
+      { id: 'GW', kind: 'hmi', name: 'Gateway', label: 'Gateway / HMI', mac: '02-00-00-00-00-99', mode: 'on', lphdSim: false },
     ],
+    // Station bus (VLAN 20): relays' station ports and the gateway.
+    // Process bus (VLAN 10): relays' process ports and the breaker IEDs.
     switches: [
-      { id: 'SW1', label: 'Bay switch', ports: { 1: { vlans: [10] }, 2: { vlans: [10] } } },
+      { id: 'PB', label: 'Process bus', ports: { 1: { vlans: [10] }, 2: { vlans: [10] } } },
+      { id: 'SB', label: 'Station bus', ports: { 1: { vlans: [20] }, 2: { vlans: [20] } } },
     ],
-    // Endpoints: an IED id, or "switch:port"
+    // Endpoints: "ied" or "ied:port" (P = process, S = station), or "switch:port"
     links: [
-      { id: 'L1', a: '21-AB', b: 'SW1:1' },
-      { id: 'L2', a: 'SW1:2', b: '52-AB' },
+      { id: 'L1', a: '21-AB:P', b: 'PB:1' },
+      { id: 'L2', a: 'PB:2', b: '52-AB' },
+      { id: 'L3', a: '21-AB:S', b: 'SB:1' },
+      { id: 'L4', a: 'SB:2', b: 'GW' },
     ],
     gocbs: [
       {
-        id: 'AB.Trip', ied: '21-AB', label: 'Trip',
+        id: 'AB.Trip', ied: '21-AB', label: 'Trip', port: 'P', // published on the process-bus port
         gocbRef: 'LineProtABPROT/LLN0$GO$Trip', datSet: 'LineProtABPROT/LLN0$DS_Trip', goID: 'AB_Trip',
         mac: '01-0C-CD-01-00-01', appid: 0x0101, vlan: { id: 10, priority: 4 }, confRev: 1,
         entries: [
@@ -86,13 +96,26 @@ export function defaultConfig() {
       { id: '21-AB.Pos', ied: '21-AB', gocb: 'AB.Pos', use: 'breakerPos',
         expect: { mac: '01-0C-CD-01-00-02', appid: 0x0102, gocbRef: 'BkrCtlABCTRL/LLN0$GO$Pos', datSet: 'BkrCtlABCTRL/LLN0$DS_Pos', confRev: 1 } },
     ],
-    features: { networkDetail: false },
+    features: { networkDetail: false, testMode: false, secondBay: false },
   }
 }
 
-// One step per schema version. v1 is the first; future steps go here.
+// One step per schema version.
 const MIGRATIONS = {
-  // 1: cfg => { ...cfg, version: 2, ... },
+  // v2 → v3: bay switch replaced by station bus + process bus (topology from the defaults)
+  2: cfg => {
+    const d = defaultConfig()
+    return { ...cfg, version: 3, ieds: d.ieds, switches: d.switches, links: d.links, gocbs: d.gocbs, subscriptions: d.subscriptions }
+  },
+  // v1 → v2: test-mode and second-bay features, relay line, fault script, BF timer
+  1: cfg => ({
+    ...cfg,
+    version: 2,
+    timing: { ...cfg.timing, bfCycles: cfg.timing?.bfCycles ?? 8 },
+    script: cfg.script ?? { faultLine: 'AB' },
+    ieds: cfg.ieds.map(d => (d.kind === 'relay' && !d.line ? { ...d, line: d.bay } : d)),
+    features: { testMode: false, secondBay: false, ...cfg.features },
+  }),
 }
 
 export function migrateConfig(cfg) {

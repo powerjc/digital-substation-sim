@@ -11,7 +11,7 @@ import { PROFILES, TRIP_CLASS, iedById, subsOfGocb } from './schema'
 import { applyScenario, normalizeScenario } from './scenario'
 import { buildTopo, forward } from './network'
 import { buildFrame, datasetValues, matchFrame, sequenceCheck, testHandling, fmtAppid } from './goose'
-import { fmtTime, fmtDur } from './units'
+import { fmtTime, fmtDur, fmtProt } from './units'
 
 export const START_T = -3.0 // run shown from here (quiet period)
 export const END_T = 2.5
@@ -20,7 +20,8 @@ export const EPS = 1e-9
 
 // Heartbeat phase of each control block: frames at phase − k·heartbeat,
 // spread so the publishers don't send at the same instant.
-const heartbeatPhase = i => -0.6 + 0.3 * i
+const PHASES = [-0.6, -0.3, -0.45, -0.15, -0.75, -0.9]
+const heartbeatPhase = i => PHASES[i % PHASES.length]
 
 class Queue {
   constructor() { this.items = []; this.seq = 0 }
@@ -42,6 +43,13 @@ const DBPOS_TEXT = { on: 'closed', off: 'open', intermediate: 'intermediate (mov
 export function simulate(baseConfig, scenarioIn) {
   const scenario = normalizeScenario(scenarioIn)
   const cfg = applyScenario(baseConfig, scenario)
+  // Test set: a simulated copy of one control block, same identity, simulation flag set
+  const tsIed = cfg.ieds.find(d => d.kind === 'testset')
+  if (tsIed && scenario.testSet?.imitate) {
+    const g = cfg.gocbs.find(x => x.id === scenario.testSet.imitate)
+    if (g) cfg.gocbs.push({ ...structuredClone(g), id: `${g.id}.sim`, ied: tsIed.id, label: `${g.label} (simulated)`, simOf: g.id, port: undefined })
+  }
+  const subsFor = g => subsOfGocb(cfg, g.simOf ?? g.id)
   const topo = buildTopo(cfg)
   const prof = PROFILES[cfg.goose.profile] ?? PROFILES.typical
   const f = cfg.freqHz
@@ -55,12 +63,13 @@ export function simulate(baseConfig, scenarioIn) {
   // ── State ──
   const ieds = {}
   for (const d of cfg.ieds) {
-    ieds[d.id] = d.kind === 'relay'
-      ? { trip: false, seenPos: null }
-      : { pos: 'on', coil: false, contactsClosed: true, tripIn: null }
+    ieds[d.id] = d.kind === 'relay' ? { trip: false, bf: false, seenPos: null }
+      : d.kind === 'breaker' ? { pos: 'on', coil: false, contactsClosed: true, tripIn: null }
+      : d.kind === 'testset' ? { trip: false, pos: 'on', bf: false }
+      : {}
   }
   const subs = Object.fromEntries(cfg.subscriptions.map(s => [s.id,
-    { status: 'noMsg', since: WARM_T, reason: 'no valid message received since start-up', lastSt: null, lastSq: null, deadline: null }]))
+    { status: 'noMsg', since: WARM_T, reason: 'no valid message received since start-up', lastSt: null, lastSq: null, deadline: null, simLocked: false }]))
   const pubs = Object.fromEntries(cfg.gocbs.map(g => [g.id,
     { stNum: 1, sqNum: 0, changeT: WARM_T, gen: 0, values: datasetValues(g, ieds[g.ied], iedById(cfg, g.ied)) }]))
   let fault = false
@@ -83,7 +92,10 @@ export function simulate(baseConfig, scenarioIn) {
     const r = forward(topo, cfg, scenario, frame, t)
     frame.hops = r.hops
     frame.rx = {}
-    for (const sub of subsOfGocb(cfg, g.id)) {
+    // IEDs the frame reached that have no subscription for it: they drop it quietly
+    const subscribed = new Set(subsFor(g).map(s => s.ied))
+    frame.unsubscribed = r.arrivals.filter(a => !subscribed.has(a.ied)).map(a => a.ied)
+    for (const sub of subsFor(g)) {
       const a = r.arrivals.find(x => x.ied === sub.ied)
       if (a) {
         frame.rx[sub.id] = { fate: 'pending', t: a.t }
@@ -138,6 +150,23 @@ export function simulate(baseConfig, scenarioIn) {
       if (m.fate === 'rejected' && s.status !== 'mismatch') setStatus(sub, 'mismatch', t, m.reason)
       return
     }
+    // Simulated messages: ignored outright unless this IED is in simulation mode.
+    // In simulation mode, once a simulated copy arrives, the real message is ignored.
+    const gSub = cfg.gocbs.find(x => x.id === sub.gocb)
+    if (frame.pdu.simulation && !ied.lphdSim) {
+      frame.rx[sub.id] = { fate: 'simIgnored', t, reason: 'simulated message ignored: this IED is not in simulation mode', compare: [] }
+      return
+    }
+    if (ied.lphdSim && frame.pdu.simulation && !s.simLocked) {
+      s.simLocked = true
+      s.lastSt = null
+      s.lastSq = null
+      log(t, 'simLock', `${sub.ied} (simulation mode) now takes ${gSub.label} from the test set; the real ${gSub.label} is ignored`, sub.ied, { sub: sub.id })
+    }
+    if (ied.lphdSim && !frame.pdu.simulation && s.simLocked) {
+      frame.rx[sub.id] = { fate: 'realIgnored', t, reason: `real message ignored: ${sub.ied} is in simulation mode and takes this message from the test set`, compare: [] }
+      return
+    }
     const seq = sequenceCheck(s, frame)
     if (seq.kind === 'old') {
       frame.rx[sub.id] = { fate: 'old', t, reason: seq.note, compare: [] }
@@ -157,9 +186,12 @@ export function simulate(baseConfig, scenarioIn) {
       }
     })
     const isNew = seq.kind === 'new' && th.use
-    frame.rx[sub.id] = { fate: isNew ? 'new' : 'repeat', t, reason: seq.note ?? th.note, compare: [] }
+    frame.rx[sub.id] = { fate: !th.use ? 'testIgnored' : isNew ? 'new' : 'repeat', t, reason: th.note ?? seq.note, compare: [] }
+    const g = cfg.gocbs.find(x => x.id === sub.gocb)
+    if (seq.kind === 'new' && !th.use) {
+      log(t, 'testIgnored', `${sub.ied} receives ${g.label} stNum ${stNum} but does not use it: ${th.note}`, sub.ied, { sub: sub.id, frame: frame.id })
+    }
     if (isNew) {
-      const g = cfg.gocbs.find(x => x.id === sub.gocb)
       log(t, 'accept', `${sub.ied} accepts ${g.label} stNum ${stNum} (${valueText(frame)})`, sub.ied, { sub: sub.id, frame: frame.id })
       q.push(t + subS, () => apply(sub, frame, t + subS))
     }
@@ -171,7 +203,12 @@ export function simulate(baseConfig, scenarioIn) {
     if (sub.use === 'tripCoil') {
       const tr = frame.pdu.allData.find(d => d.type === 'BOOLEAN')?.value ?? false
       st.tripIn = tr
-      if (tr && st.contactsClosed && !st.coil) energizeCoil(sub.ied, t)
+      if (tr && st.contactsClosed && !st.coil) {
+        const g = cfg.gocbs.find(x => x.id === sub.gocb)
+        if (iedById(cfg, sub.ied).mode === 'test/blocked') {
+          log(t, 'blocked', `${sub.ied} (test/blocked) processes the ${g.label.toLowerCase()} but its output stays blocked: trip coil not energized`, sub.ied)
+        } else energizeCoil(sub.ied, t, g)
+      }
     }
     if (sub.use === 'breakerPos') {
       const pos = frame.pdu.allData.find(d => d.type === 'Dbpos')?.value
@@ -182,10 +219,14 @@ export function simulate(baseConfig, scenarioIn) {
   }
 
   // ── Breaker ──
-  function energizeCoil(bkr, t) {
+  function energizeCoil(bkr, t, g) {
     const st = ieds[bkr]
     st.coil = true
-    log(t, 'coil', `${bkr} energizes the trip coil`, bkr)
+    log(t, 'coil', `${bkr} energizes the trip coil${g && g.label !== 'Trip' ? ` (${g.label} from ${g.ied})` : ''}`, bkr)
+    if (scenario.breakerStuck.includes(bkr)) {
+      log(t, 'stuck', `${bkr}: the trip coil is energized but the breaker does not move (stuck mechanism)`, bkr)
+      return
+    }
     q.push(t + T.auxMoveMs / 1000, () => {
       st.pos = 'intermediate'
       log(t + T.auxMoveMs / 1000, 'pos', `${bkr} position: intermediate (mechanism moving)`, bkr)
@@ -236,14 +277,39 @@ export function simulate(baseConfig, scenarioIn) {
     if (t === null || t === undefined) continue
     if (t >= START_T) q.push(t, () => log(t, 'link', `Link ${link} goes down`, null, { link }))
   }
-  q.push(0, () => { fault = true; log(0, 'fault', 'Fault on line A–B', null) })
-  for (const r of cfg.ieds.filter(d => d.kind === 'relay')) {
+  for (const [sw, t] of Object.entries(scenario.switchDown)) {
+    if (t === null || t === undefined) continue
+    if (t >= START_T) q.push(t, () => log(t, 'link', `Switch ${sw} fails`, null, { sw }))
+  }
+  if (tsIed && scenario.testSet?.imitate && scenario.testSet.tripAt !== null && scenario.testSet.tripAt !== undefined) {
+    const ta = scenario.testSet.tripAt
+    q.push(ta, () => {
+      ieds[tsIed.id].trip = true
+      log(ta, 'testset', `Test set injects a simulated trip (imitating ${cfg.gocbs.find(x => x.id === scenario.testSet.imitate)?.ied})`, tsIed.id)
+      dataChanged(tsIed.id, 'trip', ta)
+    })
+  }
+  const faultLine = cfg.script?.faultLine ?? 'AB'
+  q.push(0, () => { fault = true; log(0, 'fault', `Fault on line ${faultLine[0]}–${faultLine[1]}`, null) })
+  for (const r of cfg.ieds.filter(d => d.kind === 'relay' && (d.line ?? d.bay) === faultLine)) {
     const tt = T.relayTripCycles / f
     q.push(tt, () => {
       ieds[r.id].trip = true
       log(tt, 'trip', `${r.id} trips (PTRC Tr.general = true)`, r.id)
       dataChanged(r.id, 'trip', tt)
     })
+    // Breaker failure: if current still flows (own breaker still closed) when the timer runs out
+    if (r.bf) {
+      const tb = tt + (T.bfCycles ?? 8) / f
+      q.push(tb, () => {
+        const bkr = cfg.ieds.find(d => d.kind === 'breaker' && d.bay === r.bay)
+        if (ieds[r.id].trip && bkr && ieds[bkr.id].contactsClosed) {
+          ieds[r.id].bf = true
+          log(tb, 'bf', `${r.id} breaker failure: current still flowing ${T.bfCycles ?? 8} cycles after the trip. BF trip (RBRF1.OpEx) to the other breakers on bus A`, r.id)
+          dataChanged(r.id, 'bf', tb)
+        }
+      })
+    }
   }
 
   while (q.size && q.peekT() <= END_T + EPS) q.pop().fn()
@@ -266,13 +332,23 @@ export function valueText(frame) {
 function judge(cfg, events, frames) {
   const f = cfg.freqHz
   const notes = []
-  const tripEv = events.find(e => e.kind === 'trip')
-  const coilEv = events.find(e => e.kind === 'coil')
-  const openEv = events.find(e => e.kind === 'open')
-  const tripSub = cfg.subscriptions.find(s => s.use === 'tripCoil')
-  const tripGocb = cfg.gocbs.find(g => g.id === tripSub?.gocb)
+  const faultLine = cfg.script?.faultLine ?? 'AB'
+  const relay = cfg.ieds.find(d => d.kind === 'relay' && (d.line ?? d.bay) === faultLine)
+  const bkr = cfg.ieds.find(d => d.kind === 'breaker' && d.bay === relay?.bay)
+  const tripGocb = cfg.gocbs.find(g => g.ied === relay?.id && g.entries.some(e => e.signal === 'trip'))
+  const tripSub = cfg.subscriptions.find(s => s.gocb === tripGocb?.id && s.ied === bkr?.id)
+  const tripEv = events.find(e => e.kind === 'trip' && e.dev === relay?.id)
+  // Device events from the trip on (a test set may operate the breaker before the fault)
+  const at = (kind, dev) => events.find(e => e.kind === kind && e.dev === dev && (!tripEv || e.t >= tripEv.t))
+  const coilEv = at('coil', bkr?.id)
+  const openEv = at('open', bkr?.id)
+  const preOpen = tripEv && events.find(e => e.kind === 'open' && e.dev === bkr?.id && e.t < tripEv.t)
+  const stuckEv = at('stuck', bkr?.id)
+  const blockedEv = at('blocked', bkr?.id)
+  const bfEv = at('bf', relay?.id)
   const tripFrames = frames.filter(fr => fr.gocb === tripGocb?.id && tripEv && fr.sendT >= tripEv.t && fr.pdu.allData.some(d => d.type === 'BOOLEAN' && d.value))
-  const out = { tripT: tripEv?.t ?? null, coilT: coilEv?.t ?? null, openT: openEv?.t ?? null, classMs: TRIP_CLASS.ms, className: TRIP_CLASS.name, freqHz: f, notes }
+  const out = { tripT: tripEv?.t ?? null, coilT: coilEv?.t ?? null, openT: openEv?.t ?? null, bfT: bfEv?.t ?? null, clearT: openEv?.t ?? null, bfOpens: [],
+    classMs: TRIP_CLASS.ms, className: TRIP_CLASS.name, freqHz: f, notes, relay: relay?.id, breaker: bkr?.id }
 
   if (coilEv && tripEv) {
     const by = frames.find(fr => fr.rx[tripSub.id]?.fate === 'new' && tripFrames.includes(fr))
@@ -284,19 +360,52 @@ function judge(cfg, events, frames) {
       networkS: by.rx[tripSub.id].t - by.sendT,
       subscribeS: cfg.stack.subscribeMs / 1000,
     }
-    out.verdict = out.transferT * 1000 <= TRIP_CLASS.ms + 1e-9 ? 'delivered' : 'late'
     if (by && by.pdu.sqNum > 0) {
       const n = by.pdu.sqNum
       notes.push({ level: 'warn', text: `${n === 1 ? 'The first frame' : `The first ${n} frames`} after the trip never arrived; retransmission sqNum ${n} delivered the trip ${fmtDur(out.budget.waitS)} later.` })
     }
-    notes.push({ level: out.verdict === 'delivered' ? 'info' : 'warn',
-      text: `Transfer time ${fmtDur(out.transferT)}: ${out.verdict === 'delivered' ? 'inside' : 'beyond'} the ${TRIP_CLASS.ms} ms class for trip messages (${TRIP_CLASS.name}).` })
-  } else if (tripEv) {
-    out.verdict = 'notDelivered'
-    const first = tripFrames[0]
-    const rx = first?.rx[tripSub.id]
-    if (rx) notes.push({ level: 'bad', text: `Every trip frame failed at ${tripSub.ied}. The first one: ${rx.reason}.` })
-    notes.push({ level: 'bad', text: `The breaker stayed closed. Breaker failure protection or remote backup has to clear the fault, much later (the Line Protection Simulator shows that part).` })
+    const inClass = out.transferT * 1000 <= TRIP_CLASS.ms + 1e-9
+    notes.push({ level: inClass ? 'info' : 'warn',
+      text: `Transfer time ${fmtDur(out.transferT)}: ${inClass ? 'inside' : 'beyond'} the ${TRIP_CLASS.ms} ms class for trip messages (${TRIP_CLASS.name}).` })
+    out.verdict = inClass ? 'delivered' : 'late'
+  }
+
+  if (preOpen) {
+    out.verdict = 'openBefore'
+    out.openT = preOpen.t
+    notes.push({ level: 'warn', text: `${bkr.id} opened at ${fmtTime(preOpen.t)}, before the fault, on the test set’s simulated trip: the test reached the breaker. A test like this is done with the breaker isolated, or with ${bkr.id} in test/blocked.` })
+  } else if (tripEv && !openEv) {
+    // The faulted line's own breaker never opened
+    if (stuckEv) notes.push({ level: 'bad', text: `${bkr.id} received the trip, but its breaker is stuck: the contacts never part.` })
+    else if (blockedEv) notes.push({ level: 'bad', text: `${bkr.id} is in test/blocked: it processed the trip, but its output is blocked and the breaker stays closed.` })
+    else if (!coilEv) {
+      const rx = tripFrames[0]?.rx[tripSub.id]
+      if (relay.mode === 'test' || relay.mode === 'test/blocked') notes.push({ level: 'bad', text: `${relay.id} is in ${relay.mode}: its trip carries the test flag.` })
+      if (bkr.lphdSim) notes.push({ level: 'bad', text: `${bkr.id} is in simulation mode with a test set still publishing: it takes the trip message from the test set and ignores the real one.` })
+      if (rx) notes.push({ level: 'bad', text: `Every trip frame failed at ${tripSub.ied}. The first one: ${rx.reason}.` })
+    }
+    if (bfEv) {
+      const bfGocb = cfg.gocbs.find(g => g.ied === relay.id && g.entries.some(e => e.signal === 'bf'))
+      const needed = cfg.subscriptions.filter(s => s.gocb === bfGocb?.id && s.use === 'tripCoil').map(s => s.ied)
+      out.bfOpens = needed.map(id => ({ dev: id, t: events.find(e => e.kind === 'open' && e.dev === id)?.t ?? null }))
+      notes.push({ level: 'warn', text: `${relay.id} breaker failure trip at ${fmtProt(bfEv.t, f)}${needed.length ? `, to ${needed.join(', ')}` : ''}.` })
+      const missing = out.bfOpens.filter(o => o.t === null).map(o => o.dev)
+      if (!needed.length) {
+        out.verdict = coilEv ? 'notCleared' : 'notDelivered'
+        const reached = [...new Set(frames.filter(fr => fr.gocb === bfGocb?.id).flatMap(fr => fr.unsubscribed ?? []))].filter(id => id !== bkr.id && cfg.ieds.find(d => d.id === id)?.kind === 'breaker')
+        notes.push({ level: 'bad', text: `No IED subscribes to ${relay.id}'s BF trip. ${reached.length ? `It reaches ${reached.join(' and ')}, ${reached.length > 1 ? 'which drop' : 'which drops'} it quietly. ` : ''}The fault is not cleared from bus A, and no alarm says so: there is no subscription to supervise.` })
+      } else if (!missing.length) {
+        out.clearT = Math.max(...out.bfOpens.map(o => o.t))
+        out.verdict = 'clearedByBF'
+        notes.push({ level: 'warn', text: `Bus A side cleared by breaker failure at ${fmtProt(out.clearT, f)}: ${needed.join(' and ')} opened, taking bus A out of service. The far end (B) is not modelled.` })
+      } else {
+        out.verdict = coilEv ? 'notCleared' : 'notDelivered'
+        notes.push({ level: 'bad', text: `The breaker failure trip did not open ${missing.join(', ')}: the fault is not cleared from bus A. Remote backup at the far ends has to clear it.` })
+      }
+    } else {
+      out.verdict = 'notDelivered'
+      notes.push({ level: 'bad', text: 'The breaker stayed closed. Breaker failure protection or remote backup has to clear the fault, much later (the Line Protection Simulator shows that part).' })
+    }
   }
 
   // Supervision: what warned, and when
@@ -308,8 +417,10 @@ function judge(cfg, events, frames) {
       notes.push({ level: 'warn', text: `Alarm, ${sub.ied} ${g.label} subscription: ${when}.` })
     }
   }
-  const silent = out.verdict === 'notDelivered' && !events.some(e => e.sub === tripSub.id && ['alarm', 'stale', 'mismatch'].includes(e.kind))
-  if (silent) notes.push({ level: 'bad', text: 'No alarm warned of it.' })
+  const silent = out.verdict !== 'delivered' && out.verdict !== 'late' && tripSub && !events.some(e => e.sub === tripSub.id && ['alarm', 'stale', 'mismatch'].includes(e.kind))
+  const why = bkr?.lphdSim ? `: ${tripSub.ied}'s subscription stayed healthy, fed by the test set. Only ${bkr.id}'s simulation mode, on its display and the HMI, showed it`
+    : relay?.mode !== 'on' ? `: ${tripSub.ied}'s subscription stayed healthy. Only ${relay.id}'s mode, on its display and the HMI, showed it` : ''
+  if (silent && !stuckEv) notes.push({ level: 'bad', text: `No alarm warned of it${why}.` })
   return out
 }
 

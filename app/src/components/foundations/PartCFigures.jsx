@@ -12,7 +12,7 @@ export function ContactMapFigure() {
   const PAIRS = [
     { cu: 'Relay output contact (e.g. OUT101)', dg: `Dataset entry 1: ${g.entries[0].ref.split('/').pop()} = true` },
     { cu: 'Wire number and terminal (e.g. TB1-5)', dg: `Message identity: ${g.gocbRef}, APPID ${fmtAppid(g.appid)}, ${g.mac}; position 1 in ${g.datSet.split('$').pop()}` },
-    { cu: 'Multi-core cable, control house to breaker', dg: `Network path: 21-AB → L1 → SW1 → L2 → 52-AB, VLAN ${g.vlan.id}` },
+    { cu: 'Multi-core cable, control house to breaker', dg: `Network path: 21-AB → L1 → process bus PB → L2 → 52-AB, VLAN ${g.vlan.id}` },
     { cu: 'Trip-coil input: 52a in series with the 52 trip coil', dg: 'Breaker IED subscription → its own output contact → 52a → 52 trip coil (still copper)' },
     { cu: 'Trip-circuit supervision', dg: 'Subscription supervision (TAL, B5), plus the breaker IED supervising its own trip circuit' },
   ]

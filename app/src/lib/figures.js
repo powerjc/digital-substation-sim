@@ -416,7 +416,7 @@ export const MISSES = [
   { id: 'gocbRef', label: 'Subscription with the wrong gocbRef', caughtBy: ['status', 'functional', 'endtoend'], scenario: { subWrong: { '52-AB.Trip': 'gocbRef' } } },
   { id: 'datSet', label: 'Subscription with the wrong dataset name', caughtBy: ['status', 'functional', 'endtoend'], scenario: { subWrong: { '52-AB.Trip': 'datSet' } } },
   { id: 'confRev', label: 'Publisher reloaded with an edited dataset, subscriber not', caughtBy: ['config', 'status', 'functional', 'endtoend'], scenario: { subWrong: { '52-AB.Trip': 'confRev' } } },
-  { id: 'vlan', label: 'Switch port missing the VLAN', caughtBy: ['network', 'status', 'functional', 'endtoend'], scenario: { vlanMissing: [{ sw: 'SW1', port: 2, vlan: 10 }] } },
+  { id: 'vlan', label: 'Switch port missing the VLAN', caughtBy: ['network', 'status', 'functional', 'endtoend'], scenario: { vlanMissing: [{ sw: 'PB', port: 2, vlan: 10 }] } },
   { id: 'link', label: 'Bad fibre or optic', caughtBy: ['network', 'status', 'endtoend'], scenario: { linkDown: { L2: -Infinity } } },
   { id: 'testLeft', label: 'An IED left in test mode', caughtBy: ['restore'], scenario: null },
 ]

@@ -3,6 +3,7 @@ import { deviceColor } from '../lib/colors'
 import { fmtTime, fmtDur } from '../lib/units'
 import { fmtAppid, DBPOS_BITS } from '../lib/goose'
 import { FateBadge } from './FrameList'
+import { HelpLink } from './Help'
 
 // One line of plain explanation per field
 const HELP = {
@@ -41,14 +42,17 @@ function Row({ name, value, help, mono = true, hi }) {
   )
 }
 
-function Section({ title, children, open: openInit = true, summary }) {
+function Section({ title, children, open: openInit = true, summary, help }) {
   const [open, setOpen] = useState(openInit)
   return (
     <div>
-      <button onClick={() => setOpen(o => !o)} className="w-full flex items-baseline gap-2 px-3 py-1.5 bg-gray-50 text-left text-xs font-semibold text-gray-700">
+      <div className="flex items-center bg-gray-50 pr-2">
+      <button onClick={() => setOpen(o => !o)} className="flex-1 min-w-0 flex items-baseline gap-2 px-3 py-1.5 text-left text-xs font-semibold text-gray-700">
         <span className="text-gray-400 w-3">{open ? '▾' : '▸'}</span>{title}
         {!open && summary && <span className="font-normal text-gray-500 truncate">{summary}</span>}
       </button>
+      {help && <HelpLink chapter={help} />}
+      </div>
       {open && children}
     </div>
   )
@@ -93,18 +97,24 @@ export default function FrameDetail({ config, frame, detail, onClose }) {
         )
       })}
 
-      <Section title="Ethernet + 802.1Q" open={detail} summary={`${frame.dst} · VLAN ${frame.vlan.id} · prio ${frame.vlan.priority}`}>
+      {frame.unsubscribed?.length > 0 && (
+        <div className="px-3 py-2 border-b border-gray-100 text-gray-500">
+          Also reached {frame.unsubscribed.join(', ')}: no subscription there, dropped quietly.
+        </div>
+      )}
+
+      <Section title="Ethernet + 802.1Q" help="A2" open={detail} summary={`${frame.dst} · VLAN ${frame.vlan.id} · prio ${frame.vlan.priority}`}>
         <Row name="Destination MAC" value={frame.dst} help={HELP.dst} hi={bad.has('Destination MAC')} />
         <Row name="Source MAC" value={frame.src} help={HELP.src} />
         <Row name="VLAN ID" value={frame.vlan.id} help={HELP.vlan} />
         <Row name="Priority (PCP)" value={frame.vlan.priority} help={HELP.pcp} />
         <Row name="EtherType" value={`0x${frame.ethertype.toString(16).toUpperCase()}`} help={HELP.ethertype} />
       </Section>
-      <Section title="GOOSE header">
+      <Section title="GOOSE header" help="B3">
         <Row name="APPID" value={fmtAppid(frame.appid)} help={HELP.appid} hi={bad.has('APPID')} />
         {detail && <Row name="Length" value={frame.length - 22} help={HELP.length} />}
       </Section>
-      <Section title="goosePdu">
+      <Section title="goosePdu" help="B4">
         <Row name="gocbRef" value={p.gocbRef} help={HELP.gocbRef} hi={bad.has('gocbRef')} />
         <Row name="timeAllowedtoLive" value={`${p.timeAllowedtoLive} ms`} help={HELP.timeAllowedtoLive} />
         <Row name="datSet" value={p.datSet} help={HELP.datSet} hi={bad.has('datSet')} />
@@ -117,11 +127,11 @@ export default function FrameDetail({ config, frame, detail, onClose }) {
         <Row name="ndsCom" value={String(p.ndsCom)} help={HELP.ndsCom} />
         <Row name="numDatSetEntries" value={p.numDatSetEntries} help={HELP.numDatSetEntries} />
       </Section>
-      <Section title="allData">
+      <Section title="allData" help="B3">
         {p.allData.map(d => <Row key={d.ref} name={d.ref.split('/').pop()} value={valText(d)} help={HELP[d.type]} />)}
       </Section>
       {detail && (
-        <Section title="Path">
+        <Section title="Path" help="A3">
           {frame.hops.map((h, i) => (
             <Row key={i} name={`${h.link}: ${h.from} → ${h.to}`} mono={false}
               value={h.fate === 'ok' ? `${fmtTime(h.t0)} + ${fmtDur(h.t1 - h.t0)}` : <span className="text-red-700 font-semibold">{h.fate === 'vlan' ? 'VLAN not carried' : h.fate === 'down' ? 'link down' : 'lost'}</span>} />

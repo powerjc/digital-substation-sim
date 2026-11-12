@@ -6,8 +6,14 @@
 //   subWrong:   { [subId]: field }       a subscription engineered wrong:
 //                                         'appid' | 'gocbRef' | 'datSet' | 'confRev'
 //   vlanMissing: [{ sw, port, vlan }]    a switch port that doesn't carry a VLAN
+//   iedMode:    { [iedId]: mode }         'test' | 'test/blocked' (feature testMode)
+//   breakerStuck: [iedId]                 trip coil energized, mechanism doesn't move
+//   switchDown: { [switchId]: t }         switch fails at t (s); -Infinity = whole run
+//   subMissing: [subId]                   a subscription never configured at all
+//   testSet:    { imitate: gocbId, tripAt } test set publishing simulated copies (feature testMode)
+//   simMode:    [iedId]                   IEDs in simulation mode (LPHD.Sim)
 
-export const EMPTY_SCENARIO = { linkDown: {}, drops: [], subWrong: {}, vlanMissing: [] }
+export const EMPTY_SCENARIO = { linkDown: {}, drops: [], subWrong: {}, vlanMissing: [], iedMode: {}, breakerStuck: [], switchDown: {}, subMissing: [], testSet: null, simMode: [] }
 
 export const normalizeScenario = sc => ({ ...EMPTY_SCENARIO, ...(sc ?? {}) })
 
@@ -18,7 +24,14 @@ export const SUB_WRONG = {
   confRev: { label: 'Publisher re-issued (confRev 2), subscriber not updated', short: 'confRev' },
 }
 
-// Fixed choices for a link, instead of a free time setting
+// IED modes the UI offers (Mod/Beh; IEC 61850-7-4 Annex A)
+export const IED_MODES = [
+  { id: 'on', label: 'On (normal)' },
+  { id: 'test', label: 'Test' },
+  { id: 'test/blocked', label: 'Test/blocked' },
+]
+
+// Fixed choices for a link or switch, instead of a free time setting
 export const LINK_PRESETS = [
   { id: 'up', label: 'In service', t: null },
   { id: 'always', label: 'Down for the whole run', t: -Infinity },
@@ -28,7 +41,9 @@ export const LINK_PRESETS = [
 
 export function countFailures(sc) {
   const s = normalizeScenario(sc)
-  return Object.keys(s.linkDown).length + s.drops.length + Object.keys(s.subWrong).length + s.vlanMissing.length
+  return Object.keys(s.linkDown).length + s.drops.length + Object.keys(s.subWrong).length + s.vlanMissing.length +
+    Object.keys(s.iedMode).length + s.breakerStuck.length + Object.keys(s.switchDown).length + s.subMissing.length +
+    (s.testSet ? 1 : 0) + s.simMode.length
 }
 
 // Apply engineering errors (subscriptions, VLAN membership) to a copy of the
@@ -44,6 +59,15 @@ export function applyScenario(config, sc) {
     if (field === 'gocbRef') sub.expect.gocbRef = sub.expect.gocbRef.replace(/AB/g, 'AX')
     if (field === 'datSet') sub.expect.datSet = sub.expect.datSet + 'All'
     if (field === 'confRev') g.confRev = sub.expect.confRev + 1 // dataset edited and the publisher reloaded
+  }
+  cfg.subscriptions = cfg.subscriptions.filter(x => !s.subMissing.includes(x.id))
+  for (const id of s.simMode) {
+    const d = cfg.ieds.find(x => x.id === id)
+    if (d) d.lphdSim = true
+  }
+  for (const [id, mode] of Object.entries(s.iedMode)) {
+    const d = cfg.ieds.find(x => x.id === id)
+    if (d) d.mode = mode
   }
   for (const { sw, port, vlan } of s.vlanMissing) {
     const p = cfg.switches.find(x => x.id === sw)?.ports[port]

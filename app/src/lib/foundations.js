@@ -79,7 +79,7 @@ export const CHAPTERS = [
     ],
     figure: 'vlan',
     key: 'VLAN membership on switch ports decides who can receive a message at all. Priority decides who goes first when a port is busy.',
-    sim: { label: 'Break the VLAN on the bay switch', panel: 'bay' },
+    sim: { label: 'Break the VLAN on the process bus', panel: 'bay' },
   },
   {
     id: 'A5', part: 'A', built: true,

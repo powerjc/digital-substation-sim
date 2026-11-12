@@ -17,6 +17,10 @@ const KIND_STYLE = {
   alarm: 'text-red-700 font-bold',
   subOk: 'text-green-700',
   start: 'text-gray-500',
+  testIgnored: 'text-purple-700 font-semibold',
+  blocked: 'text-purple-700 font-semibold',
+  stuck: 'text-red-700 font-bold',
+  bf: 'text-orange-700 font-bold',
 }
 
 export default function EventLog({ events, eventIdx, onSelect, window: win }) {

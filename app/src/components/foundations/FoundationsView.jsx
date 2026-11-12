@@ -77,7 +77,7 @@ function SkipCheck({ onOpen }) {
   )
 }
 
-function Chapter({ c, onOpen, onTerm, onOpenSim }) {
+function Chapter({ c, onOpen, onTerm, onOpenSim, onTour }) {
   const built = builtChapters()
   const i = built.indexOf(c)
   const prev = built[i - 1], next = built[i + 1]
@@ -114,7 +114,7 @@ function Chapter({ c, onOpen, onTerm, onOpenSim }) {
         {next ? (
           <button onClick={() => onOpen(next.id)} className="text-sm px-3 py-1 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700">{next.id}. {next.title} ▶</button>
         ) : (
-          <span className="text-sm text-gray-500">{(() => { const p = PARTS.find(x => !CHAPTERS.some(c => c.part === x.id && c.built)); return p ? `Part ${p.id} (${p.title}) is coming next.` : '' })()} Meanwhile, try the simulator lessons.</span>
+          onTour && <button onClick={onTour} className="text-sm px-3 py-1 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700">Next: reading the simulator screen ▶</button>
         )}
       </div>
     </article>
@@ -144,7 +144,7 @@ function Glossary({ onOpen }) {
   )
 }
 
-export default function FoundationsView({ chapterId, onOpen, read, onOpenSim }) {
+export default function FoundationsView({ chapterId, onOpen, read, onOpenSim, onTour }) {
   const [term, setTerm] = useState(null)
   const c = chapterById(chapterId)
   const open = id => { setTerm(null); onOpen(id); window.scrollTo?.({ top: 0 }) }
@@ -160,7 +160,7 @@ export default function FoundationsView({ chapterId, onOpen, read, onOpenSim }) 
         </select>
       </div>
       <main className="bg-white rounded-xl border border-gray-200 min-w-0 pb-16">
-        {chapterId === GLOSSARY_ID || !c?.built ? <Glossary onOpen={open} /> : <Chapter c={c} onOpen={open} onTerm={setTerm} onOpenSim={onOpenSim} />}
+        {chapterId === GLOSSARY_ID || !c?.built ? <Glossary onOpen={open} /> : <Chapter c={c} onOpen={open} onTerm={setTerm} onOpenSim={onOpenSim} onTour={onTour} />}
       </main>
       <TermBar term={term} onClose={() => setTerm(null)} onChapter={open} />
     </div>
