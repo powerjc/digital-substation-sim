@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+.env
+CLAUDE.local.md
+*.local.md
+# Hand-over notes from the sibling project (contain private local setup)
+KICKOFF.md
