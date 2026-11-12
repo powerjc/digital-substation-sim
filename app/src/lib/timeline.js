@@ -12,6 +12,7 @@ import { applyScenario, normalizeScenario } from './scenario'
 import { buildTopo, forward, parseEnd } from './network'
 import { buildFrame, datasetValues, matchFrame, sequenceCheck, testHandling, fmtAppid } from './goose'
 import { fmtTime, fmtDur, fmtProt } from './units'
+import { ptpModel } from './ptp'
 
 export const START_T = -3.0 // run shown from here (quiet period)
 export const END_T = 2.5
@@ -88,6 +89,18 @@ export function simulate(baseConfig, scenarioIn) {
   let fault = false
   // ── Sampled Values: when each relay's stream is good, from the network path
   // and the merging unit's own state; samples are synthesized only for display ──
+  // ── Time sync: grandmasters and each merging unit's smpSynch over time ──
+  const gmIeds = cfg.ieds.filter(d => d.kind === 'gm')
+  const rstpCuts = cfg.links.filter(x => x.rstp === 'standby').map(l => scenario.linkDown[l.backs]).filter(Number.isFinite).map(d => d + (cfg.network.rstpRecoveryMs ?? 50) / 1000)
+  const netCuts = [...Object.values(scenario.linkDown), ...Object.values(scenario.switchDown)].filter(Number.isFinite).concat(rstpCuts)
+  const ptp = gmIeds.length && cfg.ptp ? ptpModel({
+    gms: gmIeds.map(g => ({ id: g.id, priority2: g.priority2 ?? 1 })),
+    mus: cfg.ieds.filter(d => d.kind === 'mu').map(d => d.id),
+    ptpCfg: cfg.ptp, scGm: scenario.gm ?? {}, startT: WARM_T, extraCuts: netCuts,
+    reach: (g, m, t) => forward(topo, cfg, scenario, { pub: g, gocb: 'PTP', dst: '01-1B-19-00-00-00', vlan: { id: 10, priority: 4 }, length: 64, pdu: { stNum: 0, sqNum: 0 }, port: null }, t).arrivals.some(a => a.ied === m),
+  }) : null
+  let ptpNow = ptp ? ptp.gmAt(WARM_T) : null
+
   const sv = {}       // subId → { status, synch, reason } (in snapshots)
   const svHealth = {} // subId → [{ t0, t1, arriving, frozenAt, invalid, synch, reason }]
   for (const sub of cfg.svSubs ?? []) {
@@ -100,6 +113,7 @@ export function simulate(baseConfig, scenarioIn) {
       if (Number.isFinite(d)) ts.add(d + (cfg.network.rstpRecoveryMs ?? 50) / 1000)
     }
     if (flt && Number.isFinite(flt.at)) ts.add(flt.at)
+    for (const t of ptp?.cuts ?? []) ts.add(t)
     const times = [...ts].filter(t => t >= WARM_T).sort((a, b) => a - b)
     svHealth[sub.id] = times.map((t0, i) => {
       const probe = { pub: cb.ied, gocb: cb.id, dst: cb.mac, vlan: cb.vlan, length: cb.length, pdu: { stNum: 0, sqNum: 0 }, port: null }
@@ -109,7 +123,8 @@ export function simulate(baseConfig, scenarioIn) {
       const on = k => flt?.kind === k && t0 >= flt.at - 1e-12
       return {
         t0, t1: times[i + 1] ?? Infinity,
-        arriving: reaches && !on('stop'), frozenAt: on('freeze') ? flt.at : null, invalid: on('invalid'), synch: on('sync') ? 0 : 2,
+        arriving: reaches && !on('stop'), frozenAt: on('freeze') ? flt.at : null, invalid: on('invalid'),
+        synch: on('sync') ? 0 : ptp ? ptp.synchAt(cb.ied, t0 + 1e-9) : 2,
         reason: on('stop') ? `${cb.ied} stopped sending` : !reaches ? (loss?.where ?? 'no path') : on('freeze') ? 'the sample counter stopped advancing (frozen samples)' : on('invalid') ? 'samples flagged invalid' : null,
       }
     })
@@ -121,7 +136,7 @@ export function simulate(baseConfig, scenarioIn) {
   const prp = Object.fromEntries(danps.map(id => [id, { A: 'ok', B: 'ok' }]))
   const lastSeen = Object.fromEntries(danps.map(id => [id, { A: WARM_T, B: WARM_T }]))
 
-  const snapshot = () => structuredClone({ fault, ieds, subs, prp, sv, pubs: Object.fromEntries(Object.entries(pubs).map(([k, p]) => [k, { stNum: p.stNum, sqNum: p.sqNum }])) })
+  const snapshot = () => structuredClone({ fault, ieds, subs, prp, sv, ptp: ptpNow, pubs: Object.fromEntries(Object.entries(pubs).map(([k, p]) => [k, { stNum: p.stNum, sqNum: p.sqNum }])) })
   const log = (t, kind, text, dev = null, extra = {}) => {
     if (t >= START_T - EPS) events.push({ t, kind, text, dev, ...extra, state: snapshot() })
   }
@@ -410,20 +425,39 @@ export function simulate(baseConfig, scenarioIn) {
           else log(at, 'svLost', `${sub.ied}: SV from ${cb.ied} ${st === 'lost' ? 'lost' : st}: ${h.reason}. Protection using it is blocked. Alarm`, sub.ied, { sub: sub.id })
         })
       }
-      if (h.synch !== prev.synch) {
-        q.push(h.t0, () => {
-          sv[sub.id] = { ...sv[sub.id], synch: h.synch }
-          const many = (cfg.svSubs ?? []).filter(x => x.ied === sub.ied).length > 1
-          log(h.t0, 'svSync', h.synch ? `${cb.ied} time sync restored: smpSynch ${h.synch}` : `${cb.ied} lost time sync: smpSynch 0. ${sub.ied} ${many ? 'compares merging units and can no longer line their samples up: blocked' : 'uses one merging unit and carries on'}. Alarm`, cb.ied, { sub: sub.id })
-        })
-      }
+      if (h.synch !== prev.synch) q.push(h.t0, () => { sv[sub.id] = { ...sv[sub.id], synch: h.synch } })
       prev = { status: st, synch: h.synch }
     }
+  }
+  // Sync changes, once per merging unit, naming who blocks and who carries on
+  for (const cb of cfg.svcbs ?? []) {
+    const subsCb = (cfg.svSubs ?? []).filter(s => s.sv === cb.id)
+    if (!subsCb.length) continue
+    const comparing = subsCb.filter(s => (cfg.svSubs ?? []).filter(x => x.ied === s.ied).length > 1).map(s => s.ied)
+    const single = subsCb.map(s => s.ied).filter(id => !comparing.includes(id))
+    let prevSync = 2
+    for (const h of svHealth[subsCb[0].id]) {
+      if (h.synch === prevSync) continue
+      const was = prevSync
+      prevSync = h.synch
+      if (h.t0 < START_T && h.synch !== 0) continue
+      q.push(Math.max(h.t0, START_T), () => {
+        const t = Math.max(h.t0, START_T)
+        if (h.synch === 0) log(t, 'svSync', `${cb.ied} lost time sync: smpSynch 0${h.t0 < START_T ? ' (standing)' : ''}.${comparing.length ? ` ${comparing.join(', ')} ${comparing.length > 1 ? 'compare' : 'compares'} merging units and ${comparing.length > 1 ? 'block' : 'blocks'}.` : ''}${single.length ? ` ${single.join(', ')} ${single.length > 1 ? 'use' : 'uses'} one merging unit and ${single.length > 1 ? 'carry' : 'carries'} on.` : ''} Alarm`, cb.ied)
+        else log(t, 'svSyncOk', `${cb.ied}: smpSynch ${h.synch} (${h.synch === 2 ? 'global clock' : 'local clock only'})${was === 0 ? ', synchronized again' : ''}`, cb.ied)
+      })
+    }
+  }
+  // PTP: grandmaster events and state
+  if (ptp) {
+    for (const t of ptp.cuts) q.push(t, () => { ptpNow = ptp.gmAt(t + 1e-9) })
+    for (const e of ptp.events) if (e.t >= START_T) q.push(e.t, () => { ptpNow = ptp.gmAt(e.t + 1e-9); log(e.t, 'ptp', e.text, e.dev ?? null) })
   }
   q.push(START_T, () => {
     for (const sub of cfg.svSubs ?? []) {
       if (sv[sub.id].status !== 'healthy') log(START_T, 'svLost', `${sub.ied}: SV alarm standing: ${sv[sub.id].reason}`, sub.ied, { sub: sub.id })
     }
+    if (ptpNow) for (const [g, s] of Object.entries(ptpNow.states)) if (s !== 'locked') log(START_T, 'ptp', `${g} standing: ${s === 'degraded' ? 'GPS lost long ago, past its holdover spec: local time only' : s === 'holdover' ? 'GPS lost: holdover' : s}`, g)
   })
 
   const faultLine = cfg.script?.faultLine ?? 'AB'
@@ -548,6 +582,7 @@ function judge(cfg, events, frames) {
     notes.push({ level: 'bad', text: `${relay.id} did not trip: ${nt ? nt.text.replace(`${relay.id} cannot use`, 'it could not use') : 'no trip'}. ${zone} own protection never acted; backup protection elsewhere has to clear the fault, later and taking out more (the Line Protection Simulator shows that part).` })
   } else if (tripEv && tripEv.t > (cfg.timing.relayTripCycles / f) + 1e-9) {
     notes.push({ level: 'warn', text: `${relay.id} tripped at ${fmtProt(tripEv.t, f)} instead of ${fmtProt(cfg.timing.relayTripCycles / f, f)}: it needed a cycle of valid samples after they returned.` })
+    if (openEv && ['delivered', 'late'].includes(out.verdict)) out.verdict = 'clearedLate'
   }
   if (preOpen) {
     out.verdict = 'openBefore'
@@ -598,6 +633,7 @@ function judge(cfg, events, frames) {
     const when = e.t <= START_T + 1e-9 ? 'standing since before the run' : `at ${fmtTime(e.t)}`
     notes.push({ level: 'warn', text: `${e.kind === 'svSync' ? 'Time-sync' : 'SV'} alarm, ${e.dev}: ${when}.` })
   }
+  for (const e of events.filter(x => x.kind === 'ptp')) notes.push({ level: 'info', text: `Time sync, ${fmtTime(e.t)}: ${e.text}.` })
   const prpAlarms = events.filter(e => e.kind === 'prpLan')
   for (const e of prpAlarms) {
     const when = e.t <= START_T + 1e-9 ? 'standing since before the run' : `at ${fmtTime(e.t)}`
@@ -639,11 +675,13 @@ function judgeMulti(cfg, events, frames, relay, bkrs) {
     out.transferT = Number.isFinite(worst) ? worst : undefined
     const missing = per.filter(p => p.t === null).map(p => p.dev)
     notes.push({ level: 'info', text: `One trip message from ${relay.id}, ${bkrs.length} subscribers: ${bkrs.join(', ')}.` })
+    const t0trip = cfg.timing.relayTripCycles / f
+    if (tripEv.t > t0trip + 1e-9) notes.push({ level: 'warn', text: `${relay.id} tripped at ${fmtProt(tripEv.t, f)} instead of ${fmtProt(t0trip, f)}: it needed a cycle of usable samples after they returned.` })
     if (!missing.length) {
       out.openT = Math.max(...per.map(p => p.t))
       out.clearT = out.openT
       const inClass = worst * 1000 <= TRIP_CLASS.ms + 1e-9
-      out.verdict = inClass ? 'delivered' : 'late'
+      out.verdict = tripEv.t > t0trip + 1e-9 ? 'clearedLate' : inClass ? 'delivered' : 'late'
       notes.push({ level: inClass ? 'info' : 'warn', text: `Slowest transfer time ${fmtDur(worst)}: ${inClass ? 'inside' : 'beyond'} the ${TRIP_CLASS.ms} ms class. Bus A cleared at ${fmtProt(out.openT, f)}.` })
     } else {
       out.verdict = 'notCleared'
@@ -658,6 +696,7 @@ function judgeMulti(cfg, events, frames, relay, bkrs) {
     const text = `Alarm, ${e.dev}: ${e.text.split('. ')[0].replace(`${e.dev}: `, '').replace(`${e.dev} `, '')}, ${when}.`
     if (!notes.some(n => n.text === text)) notes.push({ level: 'warn', text })
   }
+  for (const e of events.filter(x => x.kind === 'ptp')) notes.push({ level: 'info', text: `Time sync, ${fmtTime(e.t)}: ${e.text}.` })
   return out
 }
 

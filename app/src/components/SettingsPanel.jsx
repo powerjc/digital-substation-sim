@@ -43,6 +43,7 @@ export default function SettingsPanel({ config, onFeature, onReset, onNetwork })
               <li>IED stack: {config.stack.publishMs} ms to publish, {config.stack.subscribeMs} ms to act on a frame</li>
               <li>Network: {config.network.linkMbps} Mbit/s links, {config.network.switchLatencyUs} µs per switch</li>
               <li>Trip-message class: {TRIP_CLASS.ms} ms ({TRIP_CLASS.name}, IEC 61850-5)</li>
+              {isActive(config, 'timeSync') && <li>PTP: backup grandmaster after {config.ptp.failoverS} s; merging-unit holdover {config.ptp.muHoldoverS} s; grandmaster holdover in spec {config.ptp.gmHoldoverS} s</li>}
               {isActive(config, 'secondBay') && <li>Breaker failure: BF trip {config.timing.bfCycles} cycles after the trip if current still flows</li>}
             </ul>
           </div>

@@ -13,6 +13,8 @@ export const DEVICE_COLOR = {
   'MU-ATL': '#155e75',
   'MU-AB': '#0891b2',  // cyan: merging units
   'MU-AX': '#0e7490',
+  GM1: '#15803d',
+  GM2: '#15803d',
   PBA: '#0369a1',     // LAN A
   PBB: '#b45309',     // LAN B
   '21-AX': '#ca8a04', // yellow (as in the Line Protection Simulator)

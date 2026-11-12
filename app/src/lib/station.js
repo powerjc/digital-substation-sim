@@ -55,7 +55,7 @@ function applyRSTP(c) {
   const pb = c.switches.find(s => s.id === 'PB')
   c.switches = c.switches.filter(s => s.id !== 'PB')
   const kindOf = id => c.ieds.find(d => d.id === id)?.kind
-  const sideOf = end => (['breaker', 'mu'].includes(kindOf(end.split(':')[0].split('.')[0])) ? 'PB2' : 'PB1')
+  const sideOf = end => (['breaker', 'mu', 'gm'].includes(kindOf(end.split(':')[0].split('.')[0])) ? 'PB2' : 'PB1')
   const ports = { PB1: { 7: { vlans: [10] }, 8: { vlans: [10] } }, PB2: { 7: { vlans: [10] }, 8: { vlans: [10] } } }
   c.links = c.links.map(l => {
     const pbEnd = [l.a, l.b].find(e => e.startsWith('PB:'))
@@ -153,7 +153,22 @@ function addTransformerBay(c) {
   return c
 }
 
-export function stationConfig(config0) {
+// Time sync: two GPS grandmaster clocks on the process bus (PTP over Layer 2)
+function addGrandmasters(c) {
+  const pb = c.switches.find(s => s.id === 'PB')
+  pb.ports[13] = { vlans: [10] }
+  pb.ports[14] = { vlans: [10] }
+  c.ieds.push(
+    { id: 'GM1', kind: 'gm', name: 'Grandmaster1', label: 'Grandmaster', mac: '02-00-00-C1-00-01', priority2: 1, mode: 'on', lphdSim: false },
+    { id: 'GM2', kind: 'gm', name: 'Grandmaster2', label: 'Backup grandmaster', mac: '02-00-00-C1-00-02', priority2: 2, mode: 'on', lphdSim: false },
+  )
+  c.links.push({ id: 'G1', a: 'GM1', b: 'PB:13' }, { id: 'G2', a: 'GM2', b: 'PB:14' })
+  return c
+}
+
+export function stationConfig(config00) {
+  // Time sync brings Sampled Values with it
+  const config0 = isActive(config00, 'timeSync') ? { ...config00, features: { ...config00.features, sampledValues: true } } : config00
   // The transformer bay brings the second bay and Sampled Values with it; without
   // it, a fault set on the bus or the transformer falls back to line A–B
   const config = isActive(config0, 'transformerBay')
@@ -162,6 +177,7 @@ export function stationConfig(config0) {
   let base = buildStation(config)
   if (isActive(config, 'transformerBay')) base = addTransformerBay(base === config ? structuredClone(config) : base)
   if (isActive(config, 'sampledValues')) base = addMergingUnits(base === config ? structuredClone(config) : base)
+  if (isActive(config, 'timeSync')) base = addGrandmasters(base === config ? structuredClone(config) : base)
   if (!isActive(config, 'redundancy')) return base
   const c = base === config ? structuredClone(config) : base
   return config.network?.redundancy === 'rstp' ? applyRSTP(c) : applyPRP(c)

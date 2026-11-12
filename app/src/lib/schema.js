@@ -6,7 +6,7 @@
 // Units: protection-relevant times in cycles (as the Line Protection
 // Simulator); communication times in ms; network in Mbit/s and µs.
 
-export const SCHEMA_VERSION = 7
+export const SCHEMA_VERSION = 8
 
 // Retransmission profiles. IEC 61850-8-1 leaves the curve to the
 // implementation; these are illustrative. Each frame's timeAllowedtoLive is
@@ -51,6 +51,11 @@ export function defaultConfig() {
     // rstpRecoveryMs: how long RSTP takes to unblock the standby ring link (illustrative).
     network: { linkMbps: 100, switchLatencyUs: 5, redundancy: 'prp', prpLifeCheckMs: 2000, rstpRecoveryMs: 50 },
     goose: { profile: 'typical' },
+    // PTP (feature timeSync), all illustrative: the backup grandmaster takes over
+    // failoverS after the grandmaster fails (announce receipt timeout); a merging
+    // unit keeps its sync muHoldoverS after losing the grandmaster; a grandmaster
+    // stays within spec gmHoldoverS after losing GPS.
+    ptp: { failoverS: 3, muHoldoverS: 2, gmHoldoverS: 100 },
 
     ieds: [
       { id: '21-AB', kind: 'relay', bay: 'AB', line: 'AB', name: 'LineProtAB', label: 'Line relay',
@@ -101,12 +106,14 @@ export function defaultConfig() {
       { id: '21-AB.Pos', ied: '21-AB', gocb: 'AB.Pos', use: 'breakerPos',
         expect: { mac: '01-0C-CD-01-00-02', appid: 0x0102, gocbRef: 'BkrCtlABCTRL/LLN0$GO$Pos', datSet: 'BkrCtlABCTRL/LLN0$DS_Pos', confRev: 1 } },
     ],
-    features: { networkDetail: false, testMode: false, secondBay: false, redundancy: false, sampledValues: false, transformerBay: false },
+    features: { networkDetail: false, testMode: false, secondBay: false, redundancy: false, sampledValues: false, transformerBay: false, timeSync: false },
   }
 }
 
 // One step per schema version.
 const MIGRATIONS = {
+  // v7 → v8: time sync feature and PTP figures
+  7: cfg => ({ ...cfg, version: 8, ptp: cfg.ptp ?? { failoverS: 3, muHoldoverS: 2, gmHoldoverS: 100 }, features: { timeSync: false, ...cfg.features } }),
   // v6 → v7: transformer bay and bus differential feature
   6: cfg => ({ ...cfg, version: 7, features: { transformerBay: false, ...cfg.features } }),
   // v5 → v6: Sampled Values feature, SV loss detection time

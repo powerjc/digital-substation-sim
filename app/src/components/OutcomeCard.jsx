@@ -6,6 +6,7 @@ const VERDICT = {
   notDelivered: { label: 'Trip NOT delivered',          style: 'bg-red-100 text-red-800 border-red-300' },
   clearedByBF:  { label: 'Cleared by breaker failure',  style: 'bg-blue-100 text-blue-800 border-blue-300' },
   notCleared:   { label: 'Fault NOT cleared at bus A',  style: 'bg-red-100 text-red-800 border-red-300' },
+  clearedLate:  { label: 'Cleared, but late',           style: 'bg-yellow-100 text-yellow-800 border-yellow-300' },
   noTrip:       { label: 'Relay did NOT trip',          style: 'bg-red-100 text-red-800 border-red-300' },
   openBefore:   { label: 'Breaker opened by the test set', style: 'bg-purple-100 text-purple-800 border-purple-300' },
 }

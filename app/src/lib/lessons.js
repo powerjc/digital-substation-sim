@@ -4,7 +4,7 @@
 // { id, track, title, zoom: 'trip' | 'bf' | 'heartbeats', setup?(cfg), scenario,
 //   intro, watch[], tryIt[], takeaway, expect: { verdict } }
 
-export const TRACKS = ['GOOSE basics', 'Test mode', 'Two bays', 'Redundancy', 'Sampled Values', 'Transformer and bus']
+export const TRACKS = ['GOOSE basics', 'Test mode', 'Two bays', 'Redundancy', 'Sampled Values', 'Transformer and bus', 'Time sync']
 
 export const LESSONS = [
   {
@@ -320,5 +320,44 @@ export const LESSONS = [
     ],
     takeaway: 'A differential is only as good as its weakest stream: lose either side’s merging unit and the transformer has no fast protection of its own.',
     expect: { verdict: 'noTrip' },
+  },
+  {
+    id: 'ts-local-time',
+    track: 'Time sync',
+    title: 'No GPS, still one clock',
+    zoom: 'trip',
+    setup: cfg => { cfg.features.transformerBay = true; cfg.features.timeSync = true; cfg.script.faultLine = 'BUSA' },
+    scenario: { gm: { GM1: { gpsLostAt: -1000 }, GM2: { gpsLostAt: -1000 } } },
+    intro: 'Two grandmaster clocks sit on the process bus: GM1 and, as backup, GM2. Every merging unit follows the grandmaster over PTP (Foundations E3). Both lost their GPS antenna long ago and have run past their holdover spec.',
+    watch: [
+      'Both grandmasters announce local time only (clock class 52), and GM1 is still grandmaster. Every merging unit reports smpSynch 1: synchronized, but to a local clock.',
+      '87B-A compares MU-AB, MU-AX and MU-AT. They all follow the same clock, so their samples still line up, and it trips at 16.7 ms as normal.',
+    ],
+    tryIt: [
+      'Tap GM2 and set its GPS back to locked: it has the better clock and becomes grandmaster, and the merging units report smpSynch 2.',
+      'Set GM1 to “Loses GPS 2 s before the fault” instead: in holdover it is still within spec and still the better clock, so the merging units keep smpSynch 2.',
+    ],
+    takeaway: 'Inside the station, what protection needs is that every merging unit follows the same clock. Losing GPS costs the link to true time (event records, comparisons with other stations) long before it costs protection.',
+    expect: { verdict: 'delivered' },
+  },
+  {
+    id: 'ts-failover',
+    track: 'Time sync',
+    title: 'The grandmaster fails: a gap with no differential',
+    zoom: 'heartbeats',
+    setup: cfg => { cfg.features.transformerBay = true; cfg.features.timeSync = true; cfg.script.faultLine = 'BUSA' },
+    scenario: { gm: { GM1: { failAt: -2.5 } } },
+    intro: 'The same station, with GPS fine. GM1, the grandmaster, fails 2.5 s before a fault on bus A.',
+    watch: [
+      'With no grandmaster the merging units hold their own time for 2 s (illustrative). At −500 ms they all report smpSynch 0, with alarms.',
+      '87B-A and 87-AT compare merging units and block; 21-AB and 21-AX each use one merging unit and carry on.',
+      'GM2 only takes over 3 s after GM1 failed, at +500 ms. The bus fault at 0 goes unseen until then: 87B-A trips at 516.7 ms (31.0 cyc), one cycle after the samples are synchronized again, and bus A clears at 552.0 ms.',
+    ],
+    tryIt: [
+      'Tap GM1 and make it fail 5 s before the fault instead: the backup has taken over well before the fault, and 87B-A trips at 16.7 ms.',
+      'Keep GM1 failing 2.5 s before and set the fault to line A–B: 21-AB trips at 16.7 ms. A function using one merging unit doesn’t need the common clock.',
+    ],
+    takeaway: 'A grandmaster failover that takes longer than the merging units can hold their time leaves every differential blind for the gap. How fast the backup takes over, and how long the merging units hold, are protection requirements, not just network settings.',
+    expect: { verdict: 'clearedLate' },
   },
 ]

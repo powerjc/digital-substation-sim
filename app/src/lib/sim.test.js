@@ -19,14 +19,14 @@ const ms = s => Math.round(s * 1e5) / 100 // s → ms, 2 decimals
 const tripFrames = r => r.frames.filter(f => f.gocb === 'AB.Trip')
 
 describe('schema', () => {
-  it('is at v7 and migrates a current config unchanged', () => {
+  it('is at v8 and migrates a current config unchanged', () => {
     const c = defaultConfig()
     expect(c.version).toBe(SCHEMA_VERSION)
-    expect(SCHEMA_VERSION).toBe(7)
+    expect(SCHEMA_VERSION).toBe(8)
     expect(migrateConfig(c)).toEqual(c)
     expect(migrateConfig(null)).toEqual(defaultConfig())
   })
-  it('migrates a v1 config to v7: features, script, BF timer, station / process bus, PRP, RSTP, SV, transformer bay', () => {
+  it('migrates a v1 config to v8: features, script, BF timer, station / process bus, PRP, RSTP, SV, transformer bay, PTP', () => {
     const v1 = defaultConfig()
     v1.version = 1
     delete v1.script
@@ -36,13 +36,14 @@ describe('schema', () => {
     v1.switches = [{ id: 'SW1', label: 'Bay switch', ports: { 1: { vlans: [10] }, 2: { vlans: [10] } } }]
     v1.links = [{ id: 'L1', a: '21-AB', b: 'SW1:1' }, { id: 'L2', a: 'SW1:2', b: '52-AB' }]
     const m = migrateConfig(v1)
-    expect(m.version).toBe(7)
+    expect(m.version).toBe(8)
+    expect(m.ptp).toEqual({ failoverS: 3, muHoldoverS: 2, gmHoldoverS: 100 })
     expect(m.timing.svLossMs).toBe(1)
     expect(m.network.redundancy).toBe('prp')
     expect(m.network.rstpRecoveryMs).toBe(50)
     expect(m.switches.map(x => x.id)).toEqual(['PB', 'SB'])
     expect(m.network.prpLifeCheckMs).toBe(2000)
-    expect(m.features).toEqual({ networkDetail: true, testMode: false, secondBay: false, redundancy: false, sampledValues: false, transformerBay: false })
+    expect(m.features).toEqual({ networkDetail: true, testMode: false, secondBay: false, redundancy: false, sampledValues: false, transformerBay: false, timeSync: false })
     expect(m.script).toEqual({ faultLine: 'AB' })
     expect(m.timing.bfCycles).toBe(8)
     expect(m.ieds.find(d => d.id === '21-AB').line).toBe('AB')
@@ -605,6 +606,54 @@ describe('slice 4: transformer bay and bus differential', () => {
     const c = defaultConfig(); c.features.transformerBay = true; c.features.redundancy = true; c.script.faultLine = 'BUSA'
     expect(simulate(stationConfig(c), { switchDown: { PBA: 0 } }).outcome.verdict).toBe('delivered')
     c.network.redundancy = 'rstp'
+    expect(simulate(stationConfig(c), {}).outcome.verdict).toBe('delivered')
+  })
+})
+
+describe('time sync (PTP)', () => {
+  const st = (fault = 'BUSA', extra = []) => { const c = defaultConfig(); c.features.transformerBay = true; c.features.timeSync = true; for (const f of extra) c.features[f] = true; c.script.faultLine = fault; return stationConfig(c) }
+  it('two grandmasters on the process bus; time sync brings Sampled Values', () => {
+    const c = defaultConfig(); c.features.timeSync = true
+    const s = stationConfig(c)
+    expect(s.features.sampledValues).toBe(true)
+    expect(s.ieds.filter(d => d.kind === 'gm').map(d => d.id)).toEqual(['GM1', 'GM2'])
+    expect(s.links.find(l => l.a === 'GM1').b).toBe('PB:13')
+  })
+  it('normal: GM1 is grandmaster, every merging unit at smpSynch 2, bus fault cleared normally', () => {
+    const r = simulate(st(), {})
+    expect(r.events.at(-1).state.ptp.active).toBe('GM1')
+    expect(Object.values(r.events.at(-1).state.sv).every(v => v.synch === 2)).toBe(true)
+    expect(fmtProt(r.outcome.tripT, 60)).toBe('16.7 ms (1.0 cyc)')
+  })
+  it('both grandmasters past holdover: smpSynch 1 everywhere, 87B still trips at 16.7 ms', () => {
+    const r = simulate(st(), { gm: { GM1: { gpsLostAt: -1000 }, GM2: { gpsLostAt: -1000 } } })
+    expect(Object.values(r.events[0].state.sv).every(v => v.synch === 1)).toBe(true)
+    expect(r.events[0].state.ptp.states).toEqual({ GM1: 'degraded', GM2: 'degraded' })
+    expect(fmtProt(r.outcome.tripT, 60)).toBe('16.7 ms (1.0 cyc)')
+  })
+  it('GM1 loses GPS: GM2 has the better clock and takes over; GPS restored at GM2 does the same', () => {
+    const r = simulate(st(), { gm: { GM1: { gpsLostAt: -2.0 } } })
+    expect(r.events.find(e => e.kind === 'ptp' && /better clock/.test(e.text)).t).toBeCloseTo(-2.0, 9)
+    expect(r.events.at(-1).state.ptp.active).toBe('GM2')
+    const h = simulate(st(), { gm: { GM1: { gpsLostAt: -2.0 }, GM2: { gpsLostAt: -1000 } } })
+    expect(h.events.at(-1).state.ptp.active).toBe('GM1')
+    expect(Object.values(h.events.at(-1).state.sv).every(v => v.synch === 2)).toBe(true)
+  })
+  it('GM1 fails 2.5 s before: smpSynch 0 at −500 ms, GM2 at +500 ms, 87B trips at 516.7 ms (31.0 cyc), bus cleared 552.0 ms', () => {
+    const r = simulate(st(), { gm: { GM1: { failAt: -2.5 } } })
+    expect(r.events.filter(e => e.kind === 'svSync').map(e => fmtTime(e.t))).toEqual(Array(4).fill('−500.0 ms'))
+    expect(fmtTime(r.events.find(e => e.kind === 'ptp' && /GM2 is grandmaster/.test(e.text)).t)).toBe('500.0 ms')
+    expect(fmtProt(r.outcome.tripT, 60)).toBe('516.7 ms (31.0 cyc)')
+    expect(fmtProt(r.outcome.openT, 60)).toBe('552.0 ms (33.1 cyc)')
+    expect(r.outcome.verdict).toBe('clearedLate')
+  })
+  it('GM1 fails 5 s before: failover done before the fault, 16.7 ms; line fault in the gap: 21-AB at 16.7 ms', () => {
+    expect(fmtProt(simulate(st(), { gm: { GM1: { failAt: -5.0 } } }).outcome.tripT, 60)).toBe('16.7 ms (1.0 cyc)')
+    expect(fmtProt(simulate(st('AB'), { gm: { GM1: { failAt: -2.5 } } }).outcome.tripT, 60)).toBe('16.7 ms (1.0 cyc)')
+  })
+  it('works with PRP and RSTP: a LAN or ring failure at the fault leaves the bus differential at 16.7 ms', () => {
+    expect(fmtProt(simulate(st('BUSA', ['redundancy']), { switchDown: { PBA: 0 } }).outcome.tripT, 60)).toBe('16.7 ms (1.0 cyc)')
+    const c = defaultConfig(); c.features.transformerBay = true; c.features.timeSync = true; c.features.redundancy = true; c.network.redundancy = 'rstp'; c.script.faultLine = 'BUSA'
     expect(simulate(stationConfig(c), {}).outcome.verdict).toBe('delivered')
   })
 })

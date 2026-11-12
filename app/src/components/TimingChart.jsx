@@ -31,6 +31,7 @@ function segments(events, t0, endT, valueFn) {
 
 function buildRows(config, simCfg) {
   const rows = [{ key: 'fault', label: 'FAULT', type: 'digital', color: '#dc2626', fn: s => s.fault, group: null }]
+  if (config.ieds.some(d => d.kind === 'gm')) rows.push({ key: 'gm', label: 'Grandmaster', type: 'gm', group: null })
   for (const d of config.ieds) {
     if (d.kind === 'testset') {
       for (const x of simCfg.gocbs.filter(y => y.ied === d.id)) rows.push({ key: `gocb-${x.id}`, label: 'Simulated', type: 'frames', gocb: x.id, color: deviceColor(d.id), group: d.id })
@@ -160,6 +161,23 @@ export default function TimingChart({ config, run, selectedFrame, onSelectFrame,
                       fill={r.breaker ? '#dc2626' : r.color} fillOpacity={r.breaker ? 0.12 : 0.22} />
                   ))}
                   <path d={d} fill="none" stroke={r.color} strokeWidth={1.75} />
+                </g>
+              )
+            }
+            if (r.type === 'gm') {
+              const segs = segments(events, t0, t1, s => s.ptp?.active ?? 'none').filter(s => s.t0 <= now).map(s => ({ ...s, t1: Math.min(s.t1, now) }))
+              return (
+                <g key={r.key}>
+                  {label}
+                  {segs.map((s, i) => {
+                    const none = s.v === 'none', w = Math.max(0, tx(s.t1) - tx(s.t0))
+                    return (
+                      <g key={i}>
+                        <rect x={tx(s.t0)} y={none ? hi : lo - 3} width={w} height={none ? lo - hi : 3} fill={none ? '#dc2626' : '#16a34a'} fillOpacity={none ? 0.2 : 0.5} />
+                        {w > 40 && <text x={tx(s.t0) + 4} y={none ? lo - 2 : hi + 6} fontSize={9} fontWeight="700" fill={none ? '#dc2626' : '#15803d'}>{none ? 'none' : s.v}</text>}
+                      </g>
+                    )
+                  })}
                 </g>
               )
             }

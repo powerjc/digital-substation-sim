@@ -5,6 +5,7 @@ import { parseEnd } from '../lib/network'
 import { isActive } from '../lib/features'
 import { HelpLink } from './Help'
 import { SV_FAULTS } from '../lib/sv'
+import { GPS_PRESETS, GM_FAIL_PRESETS } from '../lib/ptp'
 
 // Device positions (viewBox units). Control house to yard: gateway, station
 // bus SB, relays, process bus PB, breaker IEDs. Left to right on wide screens,
@@ -45,10 +46,12 @@ const LAYOUTS = {
     GW: { x: 6, y: 64, w: 118, h: 72 },
     SB: { x: 146, y: 12, w: 26, h: 176, bar: true },
     '21-AB': { x: 196, y: 30, w: 196, h: 140 },
-    PB: { x: 416, y: 12, w: 26, h: 244, bar: true },
+    PB: { x: 416, y: 12, w: 26, h: 308, bar: true },
     '52-AB': { x: 466, y: 36, w: 168, h: 128 },
     'MU-AB': { x: 466, y: 176, w: 168, h: 56 },
-    TS: { x: 379, y: 262, w: 100, h: 34 },
+    TS: { x: 379, y: 326, w: 100, h: 34 },
+    GM1: { x: 466, y: 240, w: 168, h: 34 },
+    GM2: { x: 466, y: 280, w: 168, h: 34 },
   },
   wide2sv: {
     vb: [0, 0, 640, 470],
@@ -60,8 +63,10 @@ const LAYOUTS = {
     '21-AX': { x: 196, y: 222, w: 196, h: 144 },
     '52-AX': { x: 466, y: 222, w: 168, h: 144 },
     'MU-AX': { x: 466, y: 372, w: 168, h: 46 },
-    PB: { x: 416, y: 8, w: 26, h: 414, bar: true },
-    TS: { x: 379, y: 428, w: 100, h: 34 },
+    PB: { x: 416, y: 8, w: 26, h: 500, bar: true },
+    TS: { x: 379, y: 514, w: 100, h: 34 },
+    GM1: { x: 466, y: 426, w: 168, h: 34 },
+    GM2: { x: 466, y: 466, w: 168, h: 34 },
   },
   narrowsv: {
     vb: [0, 0, 350, 450],
@@ -70,8 +75,10 @@ const LAYOUTS = {
     '21-AB': { x: 30, y: 64, w: 256, h: 140 },
     '52-AB': { x: 30, y: 216, w: 256, h: 122 },
     'MU-AB': { x: 30, y: 350, w: 256, h: 50 },
-    TS: { x: 30, y: 412, w: 256, h: 38 },
-    PB: { x: 312, y: 60, w: 18, h: 396, bar: true },
+    TS: { x: 30, y: 490, w: 256, h: 38 },
+    PB: { x: 312, y: 60, w: 18, h: 476, bar: true },
+    GM1: { x: 30, y: 408, w: 256, h: 34 },
+    GM2: { x: 30, y: 448, w: 256, h: 34 },
   },
   narrow2sv: {
     vb: [0, 0, 350, 850],
@@ -83,8 +90,10 @@ const LAYOUTS = {
     'MU-AB': { x: 30, y: 528, w: 256, h: 48 },
     '52-AX': { x: 30, y: 588, w: 256, h: 140 },
     'MU-AX': { x: 30, y: 740, w: 256, h: 48 },
-    TS: { x: 30, y: 800, w: 256, h: 38 },
-    PB: { x: 312, y: 60, w: 18, h: 784, bar: true },
+    TS: { x: 30, y: 878, w: 256, h: 38 },
+    PB: { x: 312, y: 60, w: 18, h: 864, bar: true },
+    GM1: { x: 30, y: 796, w: 256, h: 34 },
+    GM2: { x: 30, y: 836, w: 256, h: 34 },
   },
   // Transformer bay and bus differential: three bays, compact boxes (status as chips)
   wide3: {
@@ -95,7 +104,7 @@ const LAYOUTS = {
     '21-AX': { x: 196, y: 160, w: 196, h: 104 },
     '87-AT': { x: 196, y: 312, w: 196, h: 104 },
     '87B-A': { x: 196, y: 440, w: 196, h: 104 },
-    PB: { x: 416, y: 8, w: 26, h: 560, bar: true },
+    PB: { x: 416, y: 8, w: 26, h: 590, bar: true },
     '52-AB': { x: 466, y: 12, w: 168, h: 96 },
     'MU-AB': { x: 466, y: 112, w: 168, h: 40 },
     '52-AX': { x: 466, y: 160, w: 168, h: 96 },
@@ -103,7 +112,9 @@ const LAYOUTS = {
     '52-AT': { x: 466, y: 312, w: 168, h: 110 },
     'MU-AT': { x: 466, y: 426, w: 168, h: 40 },
     'MU-ATL': { x: 466, y: 470, w: 168, h: 40 },
-    TS: { x: 379, y: 574, w: 100, h: 34 },
+    TS: { x: 379, y: 604, w: 100, h: 34 },
+    GM1: { x: 466, y: 518, w: 168, h: 34 },
+    GM2: { x: 466, y: 558, w: 168, h: 34 },
   },
   narrow3: {
     vb: [0, 0, 350, 1046], compact: true,
@@ -120,8 +131,10 @@ const LAYOUTS = {
     '52-AT': { x: 30, y: 808, w: 256, h: 104 },
     'MU-AT': { x: 30, y: 918, w: 256, h: 40 },
     'MU-ATL': { x: 30, y: 964, w: 256, h: 40 },
-    TS: { x: 30, y: 1010, w: 256, h: 38 },
-    PB: { x: 312, y: 56, w: 18, h: 994, bar: true },
+    TS: { x: 30, y: 1094, w: 256, h: 38 },
+    PB: { x: 312, y: 56, w: 18, h: 1078, bar: true },
+    GM1: { x: 30, y: 1012, w: 256, h: 34 },
+    GM2: { x: 30, y: 1052, w: 256, h: 34 },
   },
   narrow2: {
     vb: [0, 0, 340, 492],
@@ -404,6 +417,19 @@ export default function StationView({ config, run, onFaultAt }) {
           const b = LAYOUT[d.id]
           if (!b) return null
           const s = state.ieds[d.id]
+          if (d.kind === 'gm') {
+            const st = state.ptp?.states?.[d.id] ?? 'locked'
+            const active = state.ptp?.active === d.id
+            const col = st === 'failed' ? '#dc2626' : st === 'locked' ? '#16a34a' : '#ea580c'
+            const txt = { locked: 'GPS locked · class 6', holdover: 'GPS lost: holdover · class 7', degraded: 'local time only · class 52', failed: 'FAILED' }[st]
+            return (
+              <g key={d.id} {...selectable('ied', d.id)}>
+                <rect x={b.x} y={b.y} width={b.w} height={b.h} rx={6} fill={active ? '#f0fdf4' : '#fff'} stroke={isSel('ied', d.id) ? '#4f46e5' : active ? '#16a34a' : '#9ca3af'} strokeWidth={active ? 2 : 1.25} />
+                <text x={b.x + 8} y={b.y + 14} fontSize={11} fontWeight="700" fill="#374151">{d.id}{active ? ' · grandmaster' : ''}</text>
+                <text x={b.x + 8} y={b.y + 27} fontSize={9} fontWeight="600" fill={col}>{txt}</text>
+              </g>
+            )
+          }
           if (d.kind === 'testset') {
             const on = !!scenario.testSet
             return (
@@ -715,6 +741,27 @@ function FailurePanel({ config, sel, scenario, setScenario, onClose }) {
                 {SV_FAULTS.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
               </select>
             </label>
+          )
+        })()}
+        {ied.kind === 'gm' && (() => {
+          const g = scenario.gm?.[ied.id] ?? {}
+          const set = patch => setScenario(sc => ({ ...sc, gm: { ...sc.gm, [ied.id]: { ...(sc.gm?.[ied.id] ?? {}), ...patch } } }))
+          const gpsCur = GPS_PRESETS.find(p => p.at === (g.gpsLostAt ?? null))?.id ?? ''
+          const failCur = GM_FAIL_PRESETS.find(p => p.at === (g.failAt ?? null))?.id ?? ''
+          return (
+            <>
+              <label className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 sm:gap-2"><span>GPS</span>
+                <select value={gpsCur} onChange={e => set({ gpsLostAt: GPS_PRESETS.find(p => p.id === e.target.value).at })} className="border border-gray-300 rounded px-2 py-1 bg-white">
+                  {GPS_PRESETS.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+                </select>
+              </label>
+              <label className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 sm:gap-2"><span>Clock</span>
+                <select value={failCur} onChange={e => set({ failAt: GM_FAIL_PRESETS.find(p => p.id === e.target.value).at })} className="border border-gray-300 rounded px-2 py-1 bg-white">
+                  {GM_FAIL_PRESETS.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+                </select>
+              </label>
+              <span className="text-xs text-gray-500">Illustrative: the backup takes over {config.ptp?.failoverS} s after a grandmaster fails; merging units hold their sync {config.ptp?.muHoldoverS} s; a grandmaster stays in spec {config.ptp?.gmHoldoverS} s after losing GPS.</span>
+            </>
           )
         })()}
         {ied.kind === 'hmi' && <span className="text-gray-500">The gateway talks MMS to SCADA, which the simulator doesn’t model yet. Fail the station-bus switch to see that protection doesn’t depend on it.</span>}
