@@ -348,7 +348,11 @@ export default function StationView({ config, run, onFaultAt }) {
         )}
         <span className="text-xs text-gray-400 hidden sm:inline">Tap a device or link to break it</span>
       </div>
-      <svg viewBox={LAYOUT.vb.join(' ')} className="w-full h-auto select-none" role="img" aria-label="Station view: relay, switch and breaker IED">
+      {/* Fills the card's width up to ~1.35× the drawing's own size, and never
+          more than three quarters of the window's height: on wide monitors the
+          diagram stops growing instead of taking over the page. */}
+      <svg viewBox={LAYOUT.vb.join(' ')} className="block w-full h-auto mx-auto select-none" role="img" aria-label="Station view: relay, switch and breaker IED"
+        style={{ maxWidth: LAYOUT.vb[2] * 1.35, maxHeight: narrow ? undefined : '75vh' }}>
         {/* Links */}
         {config.links.map(l => {
           const p = linkPts(l)
