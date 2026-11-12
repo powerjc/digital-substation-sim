@@ -13,8 +13,8 @@ Companion to the Line Protection Simulator, which answers "the relay tripped at 
 - **Decoded frames** in the style of a protocol analyzer, every field with a one-line explanation, and expected vs received values for a frame the subscriber ignored or rejected.
 - **Failures to inject:** link down (fixed presets), one lost frame, a subscription engineered with the wrong APPID, gocbRef, dataset or confRev, a switch port missing the VLAN.
 - **Outcome:** transfer time against the 3 ms class for trip messages (IEC 61850-5, TT6), breaker open time, and which alarms warned, and when.
-- **Lessons:** *A trip is a message*, *The relay tripped, but the breaker never heard it*, *One lost frame, and a dead link*; *The relay was left in test*, *Left in simulation mode*; *Breaker failure: the neighbours clear it*, *A lost trip, saved by breaker failure*, *One switch, two bays*, *Right in one bay, missing in the other*. A tour explains the screen.
-- **⚙ options:** network detail; test mode (on / test / test/blocked per IED, simulation mode, and a test set publishing simulated GOOSE); a second bay (line A–X) with breaker failure, a stuck breaker and switch failures.
+- **Lessons:** *A trip is a message*, *The relay tripped, but the breaker never heard it*, *One lost frame, and a dead link*; *The relay was left in test*, *Left in simulation mode*; *Breaker failure: the neighbours clear it*, *A lost trip, saved by breaker failure*, *One switch, two bays*, *Right in one bay, missing in the other*; *Two networks: nothing lost*. A tour explains the screen.
+- **⚙ options:** network detail; test mode (on / test / test/blocked per IED, simulation mode, and a test set publishing simulated GOOSE); a second bay (line A–X) with breaker failure, a stuck breaker and switch failures; a redundant process bus (PRP, LAN A and LAN B).
 - **Foundations:** 25 short chapters from the copper you know to the network (A), IEC 61850 messaging (B), virtual wiring in ANSI / IEEE terms (C), configuration and SCL (D), and time (E), each with a figure that runs the simulator's own engine; an 86-term glossary.
 
 ## Model notes and limits
@@ -22,7 +22,7 @@ Companion to the Line Protection Simulator, which answers "the relay tripped at 
 - The fault and the relay's decision are **scripted** (trip 1 cycle after the fault); this simulator is about how signals travel, not why the relay tripped.
 - Retransmission profile, IED stack times, switch latency and breaker timing are **illustrative**; IEC 61850-8-1 leaves the retransmission curve to the implementation.
 - Deterministic: no random loss, jitter or background traffic. VLAN priority is shown and explained but has no effect without competing traffic.
-- Not yet: PRP/HSR redundancy (next), Sampled Values, the transformer bay, time sync in the simulator, MMS on the station bus.
+- Not yet: HSR and RSTP, Sampled Values, the transformer bay, time sync in the simulator, MMS on the station bus.
 
 ## Run
 

@@ -9,7 +9,7 @@ Pure simulation logic lives in `app/src/lib/` (no React — keep it that way so 
 | File | Role |
 |------|------|
 | `schema.js` | Config schema (v2; v1 migrates): the station as data (IEDs, switches, links, GOOSE control blocks, subscriptions), scripted timing, stack and network figures, `features`. `migrateConfig()`, `PROFILES` (retransmission), `TRIP_CLASS` |
-| `station.js` | `stationConfig(config)`: the station the engine runs. Station bus SB + process bus PB in the base config; feature `secondBay` adds bay A–X and breaker-failure GOOSE; feature `testMode` adds the test set TS on PB port 9 |
+| `station.js` | `stationConfig(config)`: the station the engine runs. Station bus SB + process bus PB in the base config; feature `secondBay` adds bay A–X and breaker-failure GOOSE; feature `testMode` adds the test set TS on PB port 9; feature `redundancy` splits PB into PRP LANs PBA / PBB (switch `lan: 'A' | 'B'`, IED ports `P.A` / `P.B`, breaker `A` / `B`) |
 | `scenario.js` | Injected failures (`linkDown`, `drops`, `subWrong`, `vlanMissing`, `iedMode`, `breakerStuck`, `switchDown`), `applyScenario()` (engineering errors applied to a config copy), fixed `LINK_PRESETS` |
 | `network.js` | Topology from links, `forward()`: carries a frame through store-and-forward switches (VLAN membership on ingress and egress, link down, explicit drops), hop timing |
 | `goose.js` | Frame building and length estimate, the subscriber's checks in order: `matchFrame` (filter: MAC/APPID → ignored; identity: gocbRef/datSet/confRev → rejected), `sequenceCheck`, `testHandling` (slice 1.1 hook, pass-through now) |
@@ -34,6 +34,7 @@ Data flow: `App` (config) → `stationConfig` → `useRun` (scenario, zoom, play
 - **Failures are scenario, not config**, so they never leak into settings or lessons that don't set them
 - **Test mode** (feature `testMode`): IED `mode` via `scenario.iedMode`; `testHandling` = simulation rule (LPHD.Sim) then test rule (IEC 61850-7-4 Annex A as taught); frame fate `testIgnored`; breaker IED in test/blocked never energizes its coil
 - **Engine relies on bays:** a relay trips if its `line` is `script.faultLine`; a breaker is the relay's by `bay`; breaker failure checks the own-bay breaker. Keep those fields on new IEDs
+- **PRP:** the engine finds doubly attached nodes from links to switches with `lan`; it adds the RCT (frame `rct`, +6 bytes), keeps both copies per subscription in `frame.copies`, uses the first, and raises `prpLan` events after `network.prpLifeCheckMs` of silence on a LAN (state `prp[ied]`)
 - **Help links:** `<HelpLink chapter="B4" />` (via `HelpContext`) beside panel titles; only built chapters render
 - **Figures:** typical, published values only, labelled "illustrative" until confirmed (SPEC § 7). No organization-specific settings or practices in anything tracked
 - **Foundations:** one concept, one figure per chapter; every `{{term}}` must exist in `glossary.js`; numbers quoted in chapters are tested like lesson figures

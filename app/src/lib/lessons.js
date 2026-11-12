@@ -4,7 +4,7 @@
 // { id, track, title, zoom: 'trip' | 'bf' | 'heartbeats', setup?(cfg), scenario,
 //   intro, watch[], tryIt[], takeaway, expect: { verdict } }
 
-export const TRACKS = ['GOOSE basics', 'Test mode', 'Two bays']
+export const TRACKS = ['GOOSE basics', 'Test mode', 'Two bays', 'Redundancy']
 
 export const LESSONS = [
   {
@@ -180,5 +180,25 @@ export const LESSONS = [
     ],
     takeaway: 'Supervision only watches the subscriptions that exist. A subscription that was never configured is the one miss no alarm can find; only checking each IED against the signal matrix, and testing each signal end to end, catches it.',
     expect: { verdict: 'notCleared' },
+  },
+  {
+    id: 'prp-nothing-lost',
+    track: 'Redundancy',
+    title: 'Two networks: nothing lost',
+    zoom: 'heartbeats',
+    setup: cfg => { cfg.features.secondBay = true; cfg.features.redundancy = true },
+    scenario: { switchDown: { PBA: -2.0 } },
+    intro: 'The station from “One switch, two bays”, but the process bus is now two independent networks, LAN A (PBA) and LAN B (PBB). Every relay and breaker IED is connected to both and sends every frame on both (PRP). PBA fails 2 s before the fault.',
+    watch: [
+      'Within 2 s every relay and breaker IED raises a PRP alarm: LAN A silent. No subscription alarms: every message still arrives over LAN B.',
+      'At the fault the trip arrives over LAN B with no delay: transfer time 2.03 ms, and 52-AB opens at 52.0 ms (switch to Around the trip).',
+    ],
+    tryIt: [
+      'Decode a trip frame and look at its PRP copies at 52-AB: LAN A lost, LAN B used.',
+      'Tap PBB and make it fail at the fault as well: both copies are lost and nothing at bus A clears the fault. The PRP alarms were the warning that the station had been running without redundancy.',
+      'Clear the failures and lose the first trip frame on link L1A instead: the LAN B copy delivers it with no delay. In lesson 3 the same loss cost 2 ms.',
+    ],
+    takeaway: 'PRP loses nothing when one network fails: there is no recovery time, because the second copy is already on its way. But protection can’t tell that a LAN is gone; only the PRP alarm says the station is no longer redundant, and it must be acted on like any protection alarm.',
+    expect: { verdict: 'delivered' },
   },
 ]

@@ -72,6 +72,24 @@ function anchor(L, dev, toward) {
   return { x: o.x > c.x ? b.x + b.w : b.x, y: c.y }
 }
 
+// PRP: split the process-bus bar into LAN A and LAN B, side by side
+function splitPB(L) {
+  const pb = L.PB
+  if (!pb) return L
+  const out = { ...L }
+  delete out.PB
+  if (pb.h > pb.w) {
+    out.PBA = { ...pb, x: pb.x - 4, w: 16 }
+    out.PBB = { ...pb, x: pb.x + 16, w: 16 }
+    if (out.TS) out.TS = { ...out.TS, x: out.PBA.x + 8 - out.TS.w / 2 }
+  } else {
+    out.PBA = { ...pb, y: pb.y - 4, h: 14 }
+    out.PBB = { ...pb, y: pb.y + 14, h: 14 }
+    if (out.TS) out.TS = { ...out.TS, y: out.PBA.y + 7 - out.TS.h / 2 }
+  }
+  return out
+}
+
 function useNarrow() {
   const q = '(max-width: 639px)'
   const [narrow, setNarrow] = useState(() => typeof window !== 'undefined' && window.matchMedia?.(q).matches)
@@ -114,7 +132,8 @@ export default function StationView({ config, run }) {
   const nFail = countFailures(scenario)
   const narrow = useNarrow()
   const two = config.ieds.some(d => d.id === '21-AX')
-  const LAYOUT0 = LAYOUTS[(narrow ? 'narrow' : 'wide') + (two ? '2' : '')]
+  const prpOn = config.switches.some(x => x.id === 'PBA')
+  const LAYOUT0 = (L => (prpOn ? splitPB(L) : L))(LAYOUTS[(narrow ? 'narrow' : 'wide') + (two ? '2' : '')])
   // The view box ends below the lowest device present (the test set only with test mode)
   const present = [...config.ieds.map(d => d.id), ...config.switches.map(x => x.id)].filter(id => LAYOUT0[id])
   const LAYOUT = { ...LAYOUT0, vb: [0, 0, LAYOUT0.vb[2], Math.max(...present.map(id => LAYOUT0[id].y + LAYOUT0[id].h)) + 6] }
@@ -135,8 +154,15 @@ export default function StationView({ config, run }) {
     }
   }
   const linkPts = l => {
-    const a = parseEnd(l.a).dev, b = parseEnd(l.b).dev
-    return { a: anchor(LAYOUT, a, b), b: anchor(LAYOUT, b, a), A: a, B: b }
+    const ea = parseEnd(l.a), eb = parseEnd(l.b)
+    const a = anchor(LAYOUT, ea.dev, eb.dev), b = anchor(LAYOUT, eb.dev, ea.dev)
+    // PRP: a device's LAN A and LAN B links run side by side
+    const lan = [ea.port, eb.port].map(p => String(p ?? '')).find(p => /(^|\.)[AB]$/.test(p))
+    if (prpOn && lan) {
+      const off = lan.endsWith('A') ? -5 : 5
+      if (isVert(a, b)) { a.x += off; b.x += off } else { a.y += off; b.y += off }
+    }
+    return { a, b, A: ea.dev, B: eb.dev }
   }
   const hopPts = h => {
     const l = config.links.find(x => x.id === h.link)
@@ -172,9 +198,9 @@ export default function StationView({ config, run }) {
               <line x1={p.a.x} y1={p.a.y} x2={p.b.x} y2={p.b.y}
                 stroke={down ? '#dc2626' : isSel('link', l.id) ? '#4f46e5' : '#9ca3af'} strokeWidth={isSel('link', l.id) ? 4 : 3}
                 strokeDasharray={down ? '6 4' : undefined} />
-              <text x={vertical ? mx - 6 : mx} y={vertical ? my + 4 : p.a.y + 13} textAnchor={vertical ? 'end' : 'middle'} fontSize={10} fill={failing ? '#dc2626' : '#6b7280'} fontWeight={failing ? 700 : 400}>
+              {(!prpOn || detail || !/[AB]$/.test(l.id) || failing) && <text x={vertical ? mx - 6 : mx} y={vertical ? my + 4 : p.a.y + 13} textAnchor={vertical ? 'end' : 'middle'} fontSize={10} fill={failing ? '#dc2626' : '#6b7280'} fontWeight={failing ? 700 : 400}>
                 {l.id}{down && !swDown ? ' DOWN' : ''}
-              </text>
+              </text>}
             </g>
           )
         })}
@@ -190,7 +216,7 @@ export default function StationView({ config, run }) {
             <g key={sw.id} {...selectable('switch', sw.id)}>
               <rect x={b.x} y={b.y} width={b.w} height={b.h} rx={5} fill={dead ? '#fef2f2' : '#e2e8f0'}
                 stroke={stroke} strokeWidth={isSel('switch', sw.id) ? 2.5 : 1.25} />
-              <text x={c.x} y={c.y + 4} textAnchor="middle" fontSize={11} fontWeight="700" fill={dead ? '#dc2626' : '#334155'}
+              <text x={c.x} y={c.y + 4} textAnchor="middle" fontSize={Math.min(b.w, b.h) < 20 ? 9.5 : 11} fontWeight="700" fill={dead ? '#dc2626' : sw.lan ? deviceColor(sw.id) : '#334155'}
                 transform={vert ? `rotate(-90 ${c.x} ${c.y})` : undefined}>
                 {sw.id} · {dead ? 'FAILED' : sw.label}
               </text>
@@ -199,7 +225,9 @@ export default function StationView({ config, run }) {
                 const l = config.links.find(x => x.a === `${sw.id}:${port}` || x.b === `${sw.id}:${port}`)
                 const peer = l && parseEnd(l.a).dev === sw.id ? parseEnd(l.b).dev : parseEnd(l?.a ?? '').dev
                 if (!peer || !LAYOUT[peer]) return null
-                const a = anchor(LAYOUT, sw.id, peer)
+                if (sw.lan && !detail && !missing.length) return null // PRP bars: port numbers only with network detail
+                const lp = linkPts(l)
+                const a = lp.A === sw.id ? lp.a : lp.b
                 const right = vert && a.x >= b.x + b.w - 1
                 const below = !vert && a.y >= b.y + b.h - 1
                 const px = vert ? (right ? a.x + 3 : a.x - 3) : a.x + 4
@@ -297,6 +325,13 @@ export default function StationView({ config, run }) {
               <text x={b.x + 10} y={b.y + b.h - 8} fontSize={9} fill="#9ca3af">
                 pub {config.gocbs.filter(g => g.ied === d.id).map(g => g.label).join(', ')}
               </text>
+              {state.prp?.[d.id] && (
+                <text x={b.x + b.w - 10} y={b.y + b.h - 8} fontSize={9} textAnchor="end" fontWeight="700">
+                  <tspan fill="#6b7280" fontWeight="400">PRP </tspan>
+                  <tspan fill={state.prp[d.id].A === 'ok' ? '#16a34a' : '#dc2626'}>A{state.prp[d.id].A === 'ok' ? '✓' : '✗'}</tspan>
+                  <tspan fill={state.prp[d.id].B === 'ok' ? '#16a34a' : '#dc2626'}> B{state.prp[d.id].B === 'ok' ? '✓' : '✗'}</tspan>
+                </text>
+              )}
             </g>
           )
         })}

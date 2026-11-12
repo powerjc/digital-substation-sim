@@ -97,6 +97,21 @@ export default function FrameDetail({ config, frame, detail, onClose }) {
         )
       })}
 
+      {frame.copies && Object.entries(frame.copies).map(([subId, cps]) => (
+        <div key={subId} className="px-3 py-2 border-b border-gray-100">
+          <div className="text-gray-600 mb-0.5">PRP copies at {config.subscriptions.find(s => s.id === subId)?.ied}:<HelpLink chapter="A6" /></div>
+          {cps.map(c => (
+            <div key={c.lan} className="flex gap-2">
+              <span className="font-semibold w-12">LAN {c.lan}</span>
+              {c.t !== null
+                ? <span className="font-mono">{fmtTime(c.t)}</span>
+                : <span className="text-red-700">lost: {c.lost}</span>}
+              {c.t !== null && <span className={c.used ? 'text-green-700 font-semibold' : 'text-gray-500'}>{c.used ? 'used (first)' : 'duplicate, discarded'}</span>}
+            </div>
+          ))}
+        </div>
+      ))}
+
       {frame.unsubscribed?.length > 0 && (
         <div className="px-3 py-2 border-b border-gray-100 text-gray-500">
           Also reached {frame.unsubscribed.join(', ')}: no subscription there, dropped quietly.
@@ -130,6 +145,13 @@ export default function FrameDetail({ config, frame, detail, onClose }) {
       <Section title="allData" help="B3">
         {p.allData.map(d => <Row key={d.ref} name={d.ref.split('/').pop()} value={valText(d)} help={HELP[d.type]} />)}
       </Section>
+      {frame.rct && (
+        <Section title="PRP trailer (RCT)" help="A6">
+          <Row name="Sequence number" value={frame.rct.seq} help="Counts every frame this node sends; with the source address it identifies the two copies as one frame." />
+          <Row name="LAN" value="A or B (one per copy)" help="Which network this copy was sent on." />
+          <Row name="PRP suffix" value={`0x${frame.rct.suffix.toString(16).toUpperCase()}`} help="Marks the 6-byte trailer as PRP. Devices that don’t know PRP just ignore the extra bytes." />
+        </Section>
+      )}
       {detail && (
         <Section title="Path" help="A3">
           {frame.hops.map((h, i) => (

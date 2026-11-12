@@ -39,7 +39,14 @@
 5. Phone: SVG text in the denser figures (A1, E3) is small at 390 px.
 6. What next: slice 3 (Sampled Values), a review pass of Foundations C–E with fixes, or the GitHub Pages workflow?
 
-**Next:** slice 5 brought forward as the next slice: **redundancy (PRP)**, A/B station and process networks; *One switch, two bays* leads straight into it. Then slice 3 (Sampled Values).
+**Built 2026-11-11: redundancy (PRP), slice 5 brought forward** (⚙ Redundant process bus (PRP), off by default; schema v4). The process bus becomes LAN A (PBA) and LAN B (PBB); every relay and breaker IED is a doubly attached node sending each frame on both with a 6-byte RCT trailer (sequence number, suffix 0x88FB); the receiver uses the first copy and discards the duplicate (shown per frame as "PRP copies"). PRP supervision: a node alarms when one LAN has been silent for the life-check interval (2000 ms, illustrative), and protection carries on over the other. The test set is single-attached (LAN A). Station view: two thin LAN bars, parallel A/B links, PRP A/B status per device; timing chart: a PRP lane per device; decoded frame: PRP copies and trailer. Lesson *Two networks: nothing lost* (track *Redundancy*). 109 tests.
+
+**For the user's review (redundancy)**
+8. PRP on the **process bus only**; station-bus redundancy **waits for MMS** (decided 2026-11-11).
+9. PRP supervision is approximated from any traffic on each LAN (real PRP nodes also send their own supervision frames, every 2 s by default); duplicate discard is by the first arrival. Confirm the life-check figure and wording (§ 7).
+10. **Next (decided 2026-11-11): an *RSTP vs PRP* lesson, then Sampled Values (slice 3).** HSR stays in the backlog.
+
+**Next:** RSTP vs PRP lesson, then slice 3 (Sampled Values in the line bays).
 
 **Backlog:** see § 9.
 
@@ -311,7 +318,7 @@ None open for slice 1. Settled in review (2026-11-11): load tap = transformer be
 - **2 Second bay, GOOSE only** (built 2026-11-11, behind ⚙): line A–X on bus A (21-AX, 52-AX), a second switch so messages share some links and not others. New messaging: **breaker failure (50BF)** (52-AB stays closed → 21-AB publishes a BF trip that 52-AX must subscribe to), one publisher with several subscribers, a subscription that is right in one bay and missing in the other, and one switch or VLAN mistake affecting both bays. Still no SV.
 - **3 Sampled Values:** merging unit streams in the line bays: sample counter, quality, `smpSynch`; what the relay blocks when samples stop, freeze or lose time sync. Waveforms synthesized from hand-written phasors (no DC offset, no transients; said so in the UI). Static fixtures from the sibling engine only if more realism is ever wanted.
 - **4 Transformer bay and differentials:** load tap A–T (transformer, single feeder breaker 52-AT, HV and LV merging units); 87T tripping 52-AT; 87B on bus A from all three bays' SV, with 50BF from slice 2 feeding it.
-- **5 Redundancy (next, decided 2026-11-11):** PRP A/B networks first; RSTP vs PRP/HSR, "the network recovered in 50 ms" vs a trip budget; priority under load with SV on the same links.
+- **5 Redundancy (PRP built 2026-11-11):** PRP A/B process bus; RSTP vs PRP/HSR, "the network recovered in 50 ms" vs a trip budget; priority under load with SV on the same links.
 - **6 Time sync:** PTP grandmaster loss, holdover, what SV subscribers (especially 87B) do with unsynchronized samples.
 - **Configuration files:** a read-only walk through the SCL chain (specification, ICD/CID, SCD) showing where each subscription value comes from.
 - Raw hex / BER view, if the network audience asks for it.

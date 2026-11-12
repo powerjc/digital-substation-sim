@@ -103,7 +103,7 @@ export const CHAPTERS = [
     body: [
       'A trip that depends on a network needs a network that survives one broken cable or switch. There are two approaches. **Find another path:** switches running {{RSTP}} detect the failure and reconfigure, but frames are lost until they have. **Send everything twice:** with {{PRP}} each device sends every frame on two independent networks at once; with {{HSR}} every frame travels both ways round a ring. One failure then loses nothing.',
       '**Time:** a merging unit stamps every sample, and a relay comparing samples from several merging units needs all their clocks to agree to about a microsecond. {{PTP}} distributes that time over the same Ethernet.',
-      'Both come in later parts of the simulator. For now, the bay simulator has one switch and no redundancy, which is exactly why a single dead link loses the trip.',
+      'In the bay simulator, ⚙ Redundant process bus (PRP) turns the process bus into two networks, LAN A and LAN B: every relay and breaker IED is a {{DANP}} that sends each frame on both, with a 6-byte {{RCT}} trailer, and the receiver uses the first copy. A test set plugged into one LAN only is a {{SAN}}. Time synchronization comes in a later part of the simulator.',
     ],
     figure: null,
     key: 'A network carrying trips needs redundancy that loses nothing during a failure, and Sampled Values need a common clock.',

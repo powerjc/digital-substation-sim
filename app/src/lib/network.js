@@ -77,7 +77,8 @@ export function forward(topo, config, scenario, frame, t0) {
     for (const e of topo.adj[dev] ?? []) {
       if (e.link === inLink) continue
       // A publisher sends a control block only on the port it is bound to
-      if (dev === frame.pub && frame.port && e.port !== frame.port) continue
+      // (with PRP, both halves of that port: P.A and P.B)
+      if (dev === frame.pub && frame.port && e.port !== frame.port && !String(e.port).startsWith(`${frame.port}.`)) continue
       if (topo.isSwitch.has(dev)) {
         // Known unicast: only out of the port the address was learned on
         const learned = topo.macTable[dev]?.[frame.dst]
@@ -120,7 +121,7 @@ export function forward(topo, config, scenario, frame, t0) {
         }
         from(e.peer, e.link, hop.t1 + swLat) // store-and-forward
       } else {
-        arrivals.push({ ied: e.peer, t: hop.t1 })
+        arrivals.push({ ied: e.peer, t: hop.t1, via: dev, link: e.link })
       }
     }
   }

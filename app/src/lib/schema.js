@@ -6,7 +6,7 @@
 // Units: protection-relevant times in cycles (as the Line Protection
 // Simulator); communication times in ms; network in Mbit/s and µs.
 
-export const SCHEMA_VERSION = 3
+export const SCHEMA_VERSION = 4
 
 // Retransmission profiles. IEC 61850-8-1 leaves the curve to the
 // implementation; these are illustrative. Each frame's timeAllowedtoLive is
@@ -44,7 +44,8 @@ export function defaultConfig() {
     // Communication stack time in each IED (logic ⇄ wire). Illustrative:
     // roughly the 40 % / 20 % / 40 % split of a 3 ms budget.
     stack: { publishMs: 1.0, subscribeMs: 1.0 },
-    network: { linkMbps: 100, switchLatencyUs: 5 },
+    // prpLifeCheckMs: a PRP node alarms when one LAN has been silent this long (illustrative)
+    network: { linkMbps: 100, switchLatencyUs: 5, prpLifeCheckMs: 2000 },
     goose: { profile: 'typical' },
 
     ieds: [
@@ -96,12 +97,19 @@ export function defaultConfig() {
       { id: '21-AB.Pos', ied: '21-AB', gocb: 'AB.Pos', use: 'breakerPos',
         expect: { mac: '01-0C-CD-01-00-02', appid: 0x0102, gocbRef: 'BkrCtlABCTRL/LLN0$GO$Pos', datSet: 'BkrCtlABCTRL/LLN0$DS_Pos', confRev: 1 } },
     ],
-    features: { networkDetail: false, testMode: false, secondBay: false },
+    features: { networkDetail: false, testMode: false, secondBay: false, redundancy: false },
   }
 }
 
 // One step per schema version.
 const MIGRATIONS = {
+  // v3 → v4: redundancy feature (PRP process bus), PRP life-check interval
+  3: cfg => ({
+    ...cfg,
+    version: 4,
+    network: { ...cfg.network, prpLifeCheckMs: cfg.network?.prpLifeCheckMs ?? 2000 },
+    features: { redundancy: false, ...cfg.features },
+  }),
   // v2 → v3: bay switch replaced by station bus + process bus (topology from the defaults)
   2: cfg => {
     const d = defaultConfig()

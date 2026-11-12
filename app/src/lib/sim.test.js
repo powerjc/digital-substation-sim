@@ -18,14 +18,14 @@ const ms = s => Math.round(s * 1e5) / 100 // s → ms, 2 decimals
 const tripFrames = r => r.frames.filter(f => f.gocb === 'AB.Trip')
 
 describe('schema', () => {
-  it('is at v3 and migrates a current config unchanged', () => {
+  it('is at v4 and migrates a current config unchanged', () => {
     const c = defaultConfig()
     expect(c.version).toBe(SCHEMA_VERSION)
-    expect(SCHEMA_VERSION).toBe(3)
+    expect(SCHEMA_VERSION).toBe(4)
     expect(migrateConfig(c)).toEqual(c)
     expect(migrateConfig(null)).toEqual(defaultConfig())
   })
-  it('migrates a v1 config to v3: features, script, BF timer, then the station / process bus topology', () => {
+  it('migrates a v1 config to v4: features, script, BF timer, station / process bus, PRP', () => {
     const v1 = defaultConfig()
     v1.version = 1
     delete v1.script
@@ -35,9 +35,10 @@ describe('schema', () => {
     v1.switches = [{ id: 'SW1', label: 'Bay switch', ports: { 1: { vlans: [10] }, 2: { vlans: [10] } } }]
     v1.links = [{ id: 'L1', a: '21-AB', b: 'SW1:1' }, { id: 'L2', a: 'SW1:2', b: '52-AB' }]
     const m = migrateConfig(v1)
-    expect(m.version).toBe(3)
+    expect(m.version).toBe(4)
     expect(m.switches.map(x => x.id)).toEqual(['PB', 'SB'])
-    expect(m.features).toEqual({ networkDetail: true, testMode: false, secondBay: false })
+    expect(m.network.prpLifeCheckMs).toBe(2000)
+    expect(m.features).toEqual({ networkDetail: true, testMode: false, secondBay: false, redundancy: false })
     expect(m.script).toEqual({ faultLine: 'AB' })
     expect(m.timing.bfCycles).toBe(8)
     expect(m.ieds.find(d => d.id === '21-AB').line).toBe('AB')
@@ -410,5 +411,49 @@ describe('test set and simulation mode', () => {
     expect(r.outcome.verdict).toBe('openBefore')
     expect(r.outcome.openT).toBeLessThan(0)
     expect(simulate(cfg, { testSet: { imitate: 'AB.Trip', tripAt: -1.0 } }).outcome.verdict).toBe('delivered')
+  })
+})
+
+describe('redundancy: PRP process bus', () => {
+  const one = withFeatures('redundancy')
+  const two = withFeatures('redundancy', 'secondBay')
+  it('splits the process bus into LAN A and LAN B; every relay and breaker IED on both; the test set on LAN A only', () => {
+    expect(one.switches.map(x => x.id).sort()).toEqual(['PBA', 'PBB', 'SB'])
+    expect(one.links.filter(l => l.a.startsWith('21-AB:P')).map(l => l.b)).toEqual(['PBA:1', 'PBB:1'])
+    const ts = withFeatures('redundancy', 'testMode').links.filter(l => l.a === 'TS')
+    expect(ts.map(l => l.b)).toEqual(['PBA:9'])
+  })
+  it('normal run: two copies, the first used, the other discarded; 6-byte trailer; transfer still 2.03 ms', () => {
+    const r = simulate(one, {})
+    const f = tripFrames(r).find(x => x.sendT > 0)
+    expect(f.length).toBe(146)
+    expect(f.rct.suffix).toBe(0x88fb)
+    expect(f.copies['52-AB.Trip'].map(c => c.used)).toEqual([true, false])
+    expect(fmtDur(r.outcome.transferT)).toBe('2.03 ms')
+    expect(r.events.some(e => e.kind === 'prpLan')).toBe(false)
+  })
+  it('LAN A switch fails 2 s before: PRP alarm at every relay and breaker IED within 2 s, no subscription alarm, trip over LAN B, 52.0 ms', () => {
+    const r = simulate(two, { switchDown: { PBA: -2.0 } })
+    expect(r.outcome.verdict).toBe('delivered')
+    expect(fmtProt(r.outcome.openT, 60)).toBe('52.0 ms (3.1 cyc)')
+    const prp = r.events.filter(e => e.kind === 'prpLan')
+    expect([...new Set(prp.map(e => e.dev))].sort()).toEqual(['21-AB', '21-AX', '52-AB', '52-AX'])
+    expect(prp.every(e => e.t > -2.0 && e.t <= 0)).toBe(true)
+    expect(r.events.some(e => ['stale', 'alarm', 'mismatch'].includes(e.kind))).toBe(false)
+    const f = tripFrames(r).find(x => x.sendT > 0)
+    expect(f.copies['52-AB.Trip'].find(c => c.lan === 'A').lost).toMatch(/PBA down/)
+  })
+  it('both LANs gone: the trip is lost, and the reason names both', () => {
+    const r = simulate(two, { switchDown: { PBA: -2.0, PBB: 0 } })
+    expect(r.outcome.verdict).toBe('notDelivered')
+    expect(tripFrames(r).find(x => x.sendT > 0).rx['52-AB.Trip'].reason).toMatch(/LAN A.*LAN B/)
+  })
+  it('a frame lost on LAN A costs nothing: transfer 2.03 ms (4.03 ms without PRP)', () => {
+    const r = simulate(two, { drops: [{ link: 'L1A', gocb: 'AB.Trip', st: 2, sq: 0 }] })
+    expect(fmtDur(r.outcome.transferT)).toBe('2.03 ms')
+    expect(r.outcome.notes.some(n => /LAN A copy of the trip was lost/.test(n.text))).toBe(true)
+  })
+  it('the feature off leaves the station unchanged', () => {
+    expect(withFeatures('secondBay').switches.map(x => x.id)).toEqual(['PB', 'SB'])
   })
 })

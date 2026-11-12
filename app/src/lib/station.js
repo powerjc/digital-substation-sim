@@ -20,6 +20,34 @@ const bfEntries = [
   { ref: 'PROT/RBRF1.OpEx.q', type: 'Quality', signal: 'bf' },
 ]
 
+// With redundancy on, the process bus becomes two independent networks (PRP,
+// IEC 62439-3): LAN A (PBA) and LAN B (PBB). Every device with a process-bus
+// port gets one on each (relay port P → P.A and P.B; breaker IED → A and B,
+// same MAC on both, as PRP does). The test set stays single-attached (LAN A).
+function applyPRP(c) {
+  const pb = c.switches.find(s => s.id === 'PB')
+  c.switches = c.switches.filter(s => s.id !== 'PB')
+  c.switches.push(
+    { ...structuredClone(pb), id: 'PBA', label: 'Process bus, LAN A', lan: 'A' },
+    { ...structuredClone(pb), id: 'PBB', label: 'Process bus, LAN B', lan: 'B' },
+  )
+  const out = []
+  for (const l of c.links) {
+    const [a, b] = [l.a, l.b]
+    const pbEnd = [a, b].find(e => e.startsWith('PB:'))
+    if (!pbEnd) { out.push(l); continue }
+    const other = pbEnd === a ? b : a
+    const port = pbEnd.split(':')[1]
+    if (other.startsWith('TS')) { out.push({ ...l, a: other, b: `PBA:${port}` }); continue }
+    for (const lan of ['A', 'B']) {
+      const end = other.includes(':') ? `${other}.${lan}` : `${other}:${lan}`
+      out.push({ id: `${l.id}${lan}`, a: end, b: `PB${lan}:${port}` })
+    }
+  }
+  c.links = out
+  return c
+}
+
 // With test mode on, a test set sits on a spare process-bus port, ready to
 // publish simulated messages (scenario.testSet).
 function addTestSet(c) {
@@ -30,6 +58,11 @@ function addTestSet(c) {
 }
 
 export function stationConfig(config) {
+  const base = buildStation(config)
+  return isActive(config, 'redundancy') ? applyPRP(base === config ? structuredClone(config) : base) : base
+}
+
+function buildStation(config) {
   if (!isActive(config, 'secondBay')) return isActive(config, 'testMode') ? addTestSet(structuredClone(config)) : config
   const c = structuredClone(config)
   c.ieds.push(

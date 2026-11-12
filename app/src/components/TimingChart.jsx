@@ -42,13 +42,15 @@ function buildRows(config, simCfg) {
     const pubs = config.gocbs.filter(x => x.ied === d.id)
     const subRows = subs.map(s => ({ key: `sub-${s.id}`, label: `Sub ${config.gocbs.find(x => x.id === s.gocb).label}`, type: 'status', sub: s.id, group: g }))
     const pubRows = pubs.map(x => ({ key: `gocb-${x.id}`, label: `${x.label} GOOSE`, type: 'frames', gocb: x.id, color, group: g }))
+    const prpRow = config.switches.some(s => s.lan) && d.kind !== 'testset'
+      ? [{ key: `${g}-prp`, label: 'PRP LANs', type: 'prp', ied: g, group: g }] : []
     if (d.kind === 'relay') {
       rows.push({ key: `${g}-trip`, label: 'PTRC trip', type: 'digital', color, fn: s => s.ieds[g].trip, group: g })
       if (d.bf) rows.push({ key: `${g}-bf`, label: 'BF trip', type: 'digital', color: '#ea580c', fn: s => !!s.ieds[g].bf, group: g })
-      rows.push(...pubRows, ...subRows)
+      rows.push(...pubRows, ...subRows, ...prpRow)
       rows.push({ key: `${g}-seen`, label: 'Sees bkr open', type: 'digital', color: '#16a34a', fn: s => s.ieds[g].seenPos === 'off', group: g })
     } else {
-      rows.push(...subRows)
+      rows.push(...subRows, ...prpRow)
       rows.push({ key: `${g}-coil`, label: 'Trip coil', type: 'digital', color, fn: s => s.ieds[g].coil, group: g })
       rows.push({ key: `${g}-52`, label: 'Breaker closed', type: 'digital', color: '#6b7280', fn: s => s.ieds[g].contactsClosed, group: g, breaker: true })
       rows.push(...pubRows)
@@ -157,6 +159,24 @@ export default function TimingChart({ config, run, selectedFrame, onSelectFrame,
                       fill={r.breaker ? '#dc2626' : r.color} fillOpacity={r.breaker ? 0.12 : 0.22} />
                   ))}
                   <path d={d} fill="none" stroke={r.color} strokeWidth={1.75} />
+                </g>
+              )
+            }
+            if (r.type === 'prp') {
+              const val = s => { const p = s.prp?.[r.ied]; if (!p) return 'ok'; const lost = ['A', 'B'].filter(x => p[x] !== 'ok'); return lost.length ? `LAN ${lost.join('+')} lost` : 'ok' }
+              const segs = segments(events, t0, t1, val).filter(s => s.t0 <= now).map(s => ({ ...s, t1: Math.min(s.t1, now) }))
+              return (
+                <g key={r.key}>
+                  {label}
+                  {segs.map((s, i) => {
+                    const ok = s.v === 'ok', w = Math.max(0, tx(s.t1) - tx(s.t0))
+                    return (
+                      <g key={i}>
+                        <rect x={tx(s.t0)} y={ok ? lo - 3 : hi} width={w} height={ok ? 3 : lo - hi} fill={ok ? '#16a34a' : '#ea580c'} fillOpacity={ok ? 0.5 : 0.2} />
+                        {!ok && w > 50 && <text x={tx(s.t0) + 4} y={lo - 2} fontSize={9} fontWeight="700" fill="#c2410c">{s.v}</text>}
+                      </g>
+                    )
+                  })}
                 </g>
               )
             }

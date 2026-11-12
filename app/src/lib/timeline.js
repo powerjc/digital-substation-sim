@@ -9,7 +9,7 @@
 
 import { PROFILES, TRIP_CLASS, iedById, subsOfGocb } from './schema'
 import { applyScenario, normalizeScenario } from './scenario'
-import { buildTopo, forward } from './network'
+import { buildTopo, forward, parseEnd } from './network'
 import { buildFrame, datasetValues, matchFrame, sequenceCheck, testHandling, fmtAppid } from './goose'
 import { fmtTime, fmtDur, fmtProt } from './units'
 
@@ -50,6 +50,19 @@ export function simulate(baseConfig, scenarioIn) {
     if (g) cfg.gocbs.push({ ...structuredClone(g), id: `${g.id}.sim`, ied: tsIed.id, label: `${g.label} (simulated)`, simOf: g.id, port: undefined })
   }
   const subsFor = g => subsOfGocb(cfg, g.simOf ?? g.id)
+  // PRP: which LAN each switch belongs to, and which IEDs are attached to both
+  const lanOf = sw => cfg.switches.find(x => x.id === sw)?.lan ?? null
+  const lansOfIed = {}
+  for (const l of cfg.links) {
+    const [a, b] = [l.a, l.b].map(parseEnd)
+    for (const [x, y] of [[a, b], [b, a]]) {
+      const lan = lanOf(y.dev)
+      if (lan) (lansOfIed[x.dev] ??= new Set()).add(lan)
+    }
+  }
+  const danps = Object.keys(lansOfIed).filter(id => lansOfIed[id].size === 2)
+  const lifeCheck = (cfg.network.prpLifeCheckMs ?? 2000) / 1000
+  const rctSeq = {}
   const topo = buildTopo(cfg)
   const prof = PROFILES[cfg.goose.profile] ?? PROFILES.typical
   const f = cfg.freqHz
@@ -73,8 +86,11 @@ export function simulate(baseConfig, scenarioIn) {
   const pubs = Object.fromEntries(cfg.gocbs.map(g => [g.id,
     { stNum: 1, sqNum: 0, changeT: WARM_T, gen: 0, values: datasetValues(g, ieds[g.ied], iedById(cfg, g.ied)) }]))
   let fault = false
+  // PRP supervision per doubly attached node: last frame seen on each LAN
+  const prp = Object.fromEntries(danps.map(id => [id, { A: 'ok', B: 'ok' }]))
+  const lastSeen = Object.fromEntries(danps.map(id => [id, { A: WARM_T, B: WARM_T }]))
 
-  const snapshot = () => structuredClone({ fault, ieds, subs, pubs: Object.fromEntries(Object.entries(pubs).map(([k, p]) => [k, { stNum: p.stNum, sqNum: p.sqNum }])) })
+  const snapshot = () => structuredClone({ fault, ieds, subs, prp, pubs: Object.fromEntries(Object.entries(pubs).map(([k, p]) => [k, { stNum: p.stNum, sqNum: p.sqNum }])) })
   const log = (t, kind, text, dev = null, extra = {}) => {
     if (t >= START_T - EPS) events.push({ t, kind, text, dev, ...extra, state: snapshot() })
   }
@@ -89,20 +105,39 @@ export function simulate(baseConfig, scenarioIn) {
       stNum: p.stNum, sqNum: p.sqNum, tal: prof.talFactor * nextMs, allData: p.values,
     })
     p.sqNum++
+    // PRP: a doubly attached publisher sends each frame on both LANs with a 6-byte trailer
+    if (danps.includes(ied.id)) {
+      frame.length += 6
+      rctSeq[ied.id] = ((rctSeq[ied.id] ?? 0) + 1) % 65536
+      frame.rct = { seq: rctSeq[ied.id], suffix: 0x88fb }
+    }
     const r = forward(topo, cfg, scenario, frame, t)
+    for (const a of r.arrivals) prpSeen(a.ied, lanOf(a.via), a.t)
     frame.hops = r.hops
     frame.rx = {}
     // IEDs the frame reached that have no subscription for it: they drop it quietly
     const subscribed = new Set(subsFor(g).map(s => s.ied))
     frame.unsubscribed = r.arrivals.filter(a => !subscribed.has(a.ied)).map(a => a.ied)
     for (const sub of subsFor(g)) {
-      const a = r.arrivals.find(x => x.ied === sub.ied)
+      // With PRP two copies may arrive: the first is used, the other discarded as a duplicate
+      const arr = r.arrivals.filter(x => x.ied === sub.ied).sort((x, y) => x.t - y.t)
+      const a = arr[0]
+      if (danps.includes(sub.ied)) {
+        frame.copies ??= {}
+        frame.copies[sub.id] = ['A', 'B'].map(lan => {
+          const c = arr.find(x => lanOf(x.via) === lan)
+          if (c) return { lan, t: c.t, used: c === a }
+          const loss = r.losses.find(x => x.ied === sub.ied && lanOfLink(x.link) === lan)
+          return { lan, t: null, lost: loss?.where ?? 'no path' }
+        })
+      }
       if (a) {
-        frame.rx[sub.id] = { fate: 'pending', t: a.t }
+        frame.rx[sub.id] = { fate: 'pending', t: a.t, lan: lanOf(a.via) }
         q.push(a.t, () => receive(sub, frame, a.t))
       } else {
-        const loss = r.losses.find(x => x.ied === sub.ied)
-        frame.rx[sub.id] = { fate: 'lost', t: null, kind: loss?.kind ?? 'nopath', reason: loss ? `never arrived: ${loss.where}` : 'never arrived: no path' }
+        const ls = r.losses.filter(x => x.ied === sub.ied)
+        const wheres = [...new Set(ls.map(x => `${x.where}${lanOfLink(x.link) ? ` (LAN ${lanOfLink(x.link)})` : ''}`))]
+        frame.rx[sub.id] = { fate: 'lost', t: null, kind: ls[0]?.kind ?? 'nopath', reason: ls.length ? `never arrived: ${wheres.join('; ')}` : 'never arrived: no path' }
       }
     }
     frames.push(frame)
@@ -126,6 +161,30 @@ export function simulate(baseConfig, scenarioIn) {
         send(g, t + pubS, 0)
       })
     }
+  }
+
+  function lanOfLink(linkId) {
+    const l = cfg.links.find(x => x.id === linkId)
+    if (!l) return null
+    return [l.a, l.b].map(e => lanOf(parseEnd(e).dev)).find(Boolean) ?? null
+  }
+
+  // PRP supervision: a LAN silent for the life-check interval raises an alarm
+  function prpSeen(ied, lan, t) {
+    if (!lan || !prp[ied]) return
+    lastSeen[ied][lan] = t
+    if (prp[ied][lan] !== 'ok') {
+      prp[ied][lan] = 'ok'
+      log(t, 'prpOk', `${ied}: frames on LAN ${lan} again`, ied)
+    }
+    const due = t + lifeCheck
+    q.push(due, () => {
+      if (lastSeen[ied][lan] === t && prp[ied][lan] === 'ok') {
+        prp[ied][lan] = 'lost'
+        const other = lan === 'A' ? 'B' : 'A'
+        log(due, 'prpLan', `${ied}: nothing received on LAN ${lan} for ${lifeCheck * 1000} ms. PRP alarm: still protected over LAN ${other}, but no longer redundant`, ied, { lan })
+      }
+    })
   }
 
   // ── Subscribing ──
@@ -263,8 +322,16 @@ export function simulate(baseConfig, scenarioIn) {
     const first = phase - Math.floor((phase - WARM_T) / hb) * hb
     q.push(first, () => send(g, first, Infinity))
   })
+  // A LAN that never carried anything (down from the start) is silent from boot
+  for (const id of danps) for (const lan of ['A', 'B']) {
+    const due = WARM_T + lifeCheck
+    q.push(due, () => { if (lastSeen[id][lan] === WARM_T && prp[id][lan] === 'ok') prp[id][lan] = 'lost' })
+  }
   q.push(START_T, () => {
     log(START_T, 'start', 'Quiet period: each publisher sends a heartbeat every second', null)
+    for (const id of danps) for (const lan of ['A', 'B']) {
+      if (prp[id][lan] === 'lost') log(START_T, 'prpLan', `${id}: PRP alarm standing: nothing received on LAN ${lan}`, id, { lan })
+    }
     for (const sub of cfg.subscriptions) {
       const s = subs[sub.id]
       if (s.status !== 'healthy') {
@@ -406,6 +473,19 @@ function judge(cfg, events, frames) {
       out.verdict = 'notDelivered'
       notes.push({ level: 'bad', text: 'The breaker stayed closed. Breaker failure protection or remote backup has to clear the fault, much later (the Line Protection Simulator shows that part).' })
     }
+  }
+
+  // PRP: what the redundancy did and what it reported
+  if (out.deliveredBy && tripSub) {
+    const fr = frames.find(x => x.no === out.deliveredBy.no)
+    const cp = fr?.copies?.[tripSub.id]
+    const lostCopy = cp?.find(c => c.t === null)
+    if (lostCopy) notes.push({ level: 'info', text: `PRP: the LAN ${lostCopy.lan} copy of the trip was lost (${lostCopy.lost}); the LAN ${lostCopy.lan === 'A' ? 'B' : 'A'} copy delivered it with no delay.` })
+  }
+  const prpAlarms = events.filter(e => e.kind === 'prpLan')
+  for (const e of prpAlarms) {
+    const when = e.t <= START_T + 1e-9 ? 'standing since before the run' : `at ${fmtTime(e.t)}`
+    notes.push({ level: 'warn', text: `PRP alarm, ${e.dev}: LAN ${e.lan} silent, ${when}.` })
   }
 
   // Supervision: what warned, and when
