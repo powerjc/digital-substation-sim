@@ -17,7 +17,7 @@
 - **Pattern off the Line Protection Simulator** for look, feel and developer experience (§ 10): same stack, repo layout, conventions, panel style and progressive disclosure. No shared code and no data exchange; copy and adapt.
 - Typical, published values only, labelled "typical" or "illustrative", and checked against sources before a lesson quotes them (§ 7).
 
-**Built (slice 1, 2026-11-11, not yet committed)**
+**Built (slice 1, 2026-11-11; first commit and push 2026-11-11)**
 - Scaffold: git, `CLAUDE.md`, README, MIT `LICENSE`, `app/` (Vite + React 18 + Tailwind + Vitest, dev port 5174).
 - Engine (§ 4): topology as data, discrete-event `simulate(config, scenario)` with warm-up, retransmission (2, 4, 8 … ms to a 1 s heartbeat, TAL = 2 × next gap), store-and-forward network with VLAN checks, subscriber filter / identity / sequence / test hook / TAL supervision, breaker mechanics with Position GOOSE, outcome with transfer-time budget. Mode hooks in place (§ 4.7).
 - UI (§ 5): bay view with frames in flight and tap-to-break failure controls (stacked layout on phones), timing chart with two fixed views, outcome card with budget bar, frame list and decoded frame (bottom sheet on phones), sequence of events, lessons, welcome card, ⚙ Network detail.
