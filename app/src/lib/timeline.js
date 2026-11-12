@@ -327,9 +327,9 @@ export function simulate(baseConfig, scenarioIn) {
       st.contactsClosed = false
       st.coil = false
       log(tOpen, 'open', `${bkr} main contacts part: breaker open, trip coil de-energized`, bkr)
-      // Relays in the same bay see the current go: their trip resets
-      const bay = iedById(cfg, bkr).bay
-      for (const r of cfg.ieds.filter(d => d.kind === 'relay' && d.bay === bay && ieds[d.id].trip)) {
+      // A relay's trip resets once every breaker its trip message opens is open (the current is gone)
+      const tripsOf = rid => cfg.subscriptions.filter(s => s.use === 'tripCoil' && cfg.gocbs.find(g => g.id === s.gocb && g.ied === rid && g.entries.some(e => e.signal === 'trip'))).map(s => s.ied)
+      for (const r of cfg.ieds.filter(d => d.kind === 'relay' && ieds[d.id].trip && tripsOf(d.id).includes(bkr) && tripsOf(d.id).every(b => !ieds[b].contactsClosed))) {
         const tr = tOpen + T.tripResetCycles / f
         q.push(tr, () => {
           ieds[r.id].trip = false
@@ -413,7 +413,8 @@ export function simulate(baseConfig, scenarioIn) {
       if (h.synch !== prev.synch) {
         q.push(h.t0, () => {
           sv[sub.id] = { ...sv[sub.id], synch: h.synch }
-          log(h.t0, 'svSync', h.synch ? `${cb.ied} time sync restored: smpSynch ${h.synch}` : `${cb.ied} lost time sync: smpSynch 0. ${sub.ied} uses one merging unit and carries on; a function comparing merging units would block. Alarm`, cb.ied, { sub: sub.id })
+          const many = (cfg.svSubs ?? []).filter(x => x.ied === sub.ied).length > 1
+          log(h.t0, 'svSync', h.synch ? `${cb.ied} time sync restored: smpSynch ${h.synch}` : `${cb.ied} lost time sync: smpSynch 0. ${sub.ied} ${many ? 'compares merging units and can no longer line their samples up: blocked' : 'uses one merging unit and carries on'}. Alarm`, cb.ied, { sub: sub.id })
         })
       }
       prev = { status: st, synch: h.synch }
@@ -426,22 +427,36 @@ export function simulate(baseConfig, scenarioIn) {
   })
 
   const faultLine = cfg.script?.faultLine ?? 'AB'
-  q.push(0, () => { fault = true; log(0, 'fault', `Fault on line ${faultLine[0]}–${faultLine[1]}`, null) })
-  for (const r of cfg.ieds.filter(d => d.kind === 'relay' && (d.line ?? d.bay) === faultLine)) {
+  const FAULT_NAME = { BUSA: 'bus A', XFMRAT: 'transformer A–T' }
+  q.push(0, () => { fault = true; log(0, 'fault', `Fault on ${FAULT_NAME[faultLine] ?? `line ${faultLine[0]}–${faultLine[1]}`}`, null) })
+  for (const r of cfg.ieds.filter(d => d.kind === 'relay' && (d.protects ?? d.line ?? d.bay) === faultLine)) {
     const t0trip = T.relayTripCycles / f
     let tt = t0trip
     // A relay measuring from SV needs a cycle of good samples after the fault
-    const svSub = (cfg.svSubs ?? []).find(s => s.ied === r.id)
-    if (svSub) {
+    const svSubsR = (cfg.svSubs ?? []).filter(s => s.ied === r.id)
+    if (svSubsR.length) {
+      // One combined health timeline over every stream this relay uses. A relay
+      // comparing several merging units also needs them on the same kind of clock.
+      const segAt = (segs, t) => segs.find(h => t >= h.t0 && t < h.t1) ?? segs.at(-1)
+      const cuts = [...new Set(svSubsR.flatMap(s => svHealth[s.id].map(h => h.t0)))].sort((a, b) => a - b)
+      const comb = cuts.map((t0, i) => {
+        const hs = svSubsR.map(s => ({ h: segAt(svHealth[s.id], t0), mu: cfg.svcbs.find(x => x.id === s.sv).ied }))
+        const badOne = hs.find(x => !svGood(x.h))
+        const synchs = new Set(hs.map(x => x.h.synch))
+        const syncBad = hs.length > 1 && (synchs.size > 1 || synchs.has(0))
+        return { t0, t1: cuts[i + 1] ?? Infinity, good: !badOne && !syncBad,
+          reason: badOne ? `${badOne.mu}: ${badOne.h.reason}` : syncBad ? `merging units not on a common clock (smpSynch ${hs.map(x => `${x.mu} ${x.h.synch}`).join(', ')})` : null }
+      })
       tt = null
-      for (const h of svHealth[svSub.id].filter(svGood)) {
+      for (const h of comb.filter(x => x.good)) {
         if (h.t1 <= 0) continue
         const cand = h.t0 <= 0 ? t0trip : Math.max(t0trip, h.t0 + 1 / f)
         if (cand < h.t1) { tt = cand; break }
       }
       if (tt === null) {
-        const bad = svHealth[svSub.id].find(h => h.t0 <= t0trip && h.t1 > t0trip) ?? svHealth[svSub.id].at(-1)
-        q.push(t0trip, () => log(t0trip, 'noTrip', `${r.id} has no valid samples (${bad.reason ?? 'stream not usable'}): distance protection blocked, the fault is not seen`, r.id))
+        const bad = comb.find(h => h.t0 <= t0trip && h.t1 > t0trip) ?? comb.at(-1)
+        const fn = r.protects === 'BUSA' ? 'bus differential' : r.protects === 'XFMRAT' ? 'transformer differential' : 'distance protection'
+        q.push(t0trip, () => log(t0trip, 'noTrip', `${r.id} cannot use its samples (${bad.reason ?? 'stream not usable'}): ${fn} blocked, the fault is not seen`, r.id))
         continue
       }
     }
@@ -486,7 +501,10 @@ function judge(cfg, events, frames) {
   const f = cfg.freqHz
   const notes = []
   const faultLine = cfg.script?.faultLine ?? 'AB'
-  const relay = cfg.ieds.find(d => d.kind === 'relay' && (d.line ?? d.bay) === faultLine)
+  const relay = cfg.ieds.find(d => d.kind === 'relay' && (d.protects ?? d.line ?? d.bay) === faultLine)
+  // The breakers this relay's trip message opens; a line or transformer relay has one, the bus differential several
+  const tripBkrs = cfg.subscriptions.filter(s => s.use === 'tripCoil' && cfg.gocbs.find(g => g.id === s.gocb && g.ied === relay?.id && g.entries.some(e => e.signal === 'trip'))).map(s => s.ied)
+  if (relay && tripBkrs.length > 1) return judgeMulti(cfg, events, frames, relay, tripBkrs)
   const bkr = cfg.ieds.find(d => d.kind === 'breaker' && d.bay === relay?.bay)
   const tripGocb = cfg.gocbs.find(g => g.ied === relay?.id && g.entries.some(e => e.signal === 'trip'))
   const tripSub = cfg.subscriptions.find(s => s.gocb === tripGocb?.id && s.ied === bkr?.id)
@@ -526,7 +544,8 @@ function judge(cfg, events, frames) {
   if (!tripEv && relay) {
     out.verdict = 'noTrip'
     const nt = events.find(e => e.kind === 'noTrip' && e.dev === relay.id)
-    notes.push({ level: 'bad', text: `${relay.id} did not trip: ${nt ? nt.text.replace(`${relay.id} has `, 'it had ') : 'no trip'}. Line A–B’s own protection never acted; remote backup at the far ends has to clear the fault (the Line Protection Simulator shows that part).` })
+    const zone = { XFMRAT: 'The transformer’s', BUSA: 'Bus A’s' }[relay.protects] ?? `Line ${faultLine[0]}–${faultLine[1]}’s`
+    notes.push({ level: 'bad', text: `${relay.id} did not trip: ${nt ? nt.text.replace(`${relay.id} cannot use`, 'it could not use') : 'no trip'}. ${zone} own protection never acted; backup protection elsewhere has to clear the fault, later and taking out more (the Line Protection Simulator shows that part).` })
   } else if (tripEv && tripEv.t > (cfg.timing.relayTripCycles / f) + 1e-9) {
     notes.push({ level: 'warn', text: `${relay.id} tripped at ${fmtProt(tripEv.t, f)} instead of ${fmtProt(cfg.timing.relayTripCycles / f, f)}: it needed a cycle of valid samples after they returned.` })
   }
@@ -598,6 +617,47 @@ function judge(cfg, events, frames) {
   const why = bkr?.lphdSim ? `: ${tripSub.ied}'s subscription stayed healthy, fed by the test set. Only ${bkr.id}'s simulation mode, on its display and the HMI, showed it`
     : relay?.mode !== 'on' ? `: ${tripSub.ied}'s subscription stayed healthy. Only ${relay.id}'s mode, on its display and the HMI, showed it` : ''
   if (silent && !stuckEv) notes.push({ level: 'bad', text: `No alarm warned of it${why}.` })
+  return out
+}
+
+// Outcome for a relay that trips several breakers (bus differential)
+function judgeMulti(cfg, events, frames, relay, bkrs) {
+  const f = cfg.freqHz
+  const notes = []
+  const tripEv = events.find(e => e.kind === 'trip' && e.dev === relay.id)
+  const after = (kind, dev) => events.find(e => e.kind === kind && e.dev === dev && tripEv && e.t >= tripEv.t)
+  const per = bkrs.map(b => ({ dev: b, coil: after('coil', b)?.t ?? null, t: after('open', b)?.t ?? null }))
+  const coils = per.map(p => p.coil).filter(x => x !== null)
+  const out = { multi: true, tripT: tripEv?.t ?? null, coilT: coils.length ? Math.min(...coils) : null, openT: null, bfT: null, clearT: null, bfOpens: per.map(p => ({ dev: p.dev, t: p.t })),
+    classMs: TRIP_CLASS.ms, className: TRIP_CLASS.name, freqHz: f, notes, relay: relay.id, breaker: bkrs.join(', ') }
+  if (!tripEv) {
+    out.verdict = 'noTrip'
+    const nt = events.find(e => e.kind === 'noTrip' && e.dev === relay.id)
+    notes.push({ level: 'bad', text: `${relay.id} did not trip: ${nt ? nt.text.replace(`${relay.id} cannot use`, 'it could not use') : 'no trip'}. Nothing at bus A clears the fault; remote backup at the far ends of every line has to (much later, and it takes out more).` })
+  } else {
+    const worst = Math.max(...per.map(p => (p.coil ?? Infinity) - tripEv.t))
+    out.transferT = Number.isFinite(worst) ? worst : undefined
+    const missing = per.filter(p => p.t === null).map(p => p.dev)
+    notes.push({ level: 'info', text: `One trip message from ${relay.id}, ${bkrs.length} subscribers: ${bkrs.join(', ')}.` })
+    if (!missing.length) {
+      out.openT = Math.max(...per.map(p => p.t))
+      out.clearT = out.openT
+      const inClass = worst * 1000 <= TRIP_CLASS.ms + 1e-9
+      out.verdict = inClass ? 'delivered' : 'late'
+      notes.push({ level: inClass ? 'info' : 'warn', text: `Slowest transfer time ${fmtDur(worst)}: ${inClass ? 'inside' : 'beyond'} the ${TRIP_CLASS.ms} ms class. Bus A cleared at ${fmtProt(out.openT, f)}.` })
+    } else {
+      out.verdict = 'notCleared'
+      const sub = cfg.subscriptions.find(s => s.ied === missing[0] && cfg.gocbs.find(g => g.id === s.gocb)?.ied === relay.id)
+      const fr = frames.find(x => x.gocb === sub?.gocb && x.sendT >= tripEv.t)
+      const why = fr?.rx[sub.id]?.reason
+      notes.push({ level: 'bad', text: `${missing.join(', ')} did not open${why ? ` (${why})` : ''}: bus A is not cleared. Remote backup has to clear the rest.` })
+    }
+  }
+  for (const e of events.filter(x => ['alarm', 'stale', 'mismatch', 'svLost'].includes(x.kind) || (x.kind === 'svSync' && /lost/.test(x.text)))) {
+    const when = e.t <= START_T + 1e-9 ? 'standing since before the run' : `at ${fmtTime(e.t)}`
+    const text = `Alarm, ${e.dev}: ${e.text.split('. ')[0].replace(`${e.dev}: `, '').replace(`${e.dev} `, '')}, ${when}.`
+    if (!notes.some(n => n.text === text)) notes.push({ level: 'warn', text })
+  }
   return out
 }
 

@@ -179,7 +179,7 @@ export default function App() {
 
       <main className="flex-1 p-4 flex flex-col gap-4 min-w-0">
         <div className="grid lg:grid-cols-[minmax(0,1fr)_24rem] gap-4">
-          <Card id="bay" flash={flash} spot={spot} className="p-4"><StationView config={station} run={run} /></Card>
+          <Card id="bay" flash={flash} spot={spot} className="p-4"><StationView config={station} run={run} onFaultAt={v => setConfig(c => ({ ...c, script: { ...c.script, faultLine: v } }))} /></Card>
           <Card id="outcome" flash={flash} spot={spot}>
             <CardHead title="Outcome" help="E1" />
             <OutcomeCard outcome={run.sim.outcome} revealed={revealed} onReveal={() => setRevealedFor(run.sim)} />

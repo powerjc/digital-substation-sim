@@ -46,9 +46,13 @@ function Stream({ config, run, sub }) {
   const segs = run.sim.svHealth?.[sub.id] ?? []
   const f = config.freqHz
   const rate = svRate(f)
-  const bkr = config.ieds.find(d => d.kind === 'breaker' && d.bay === config.ieds.find(r => r.id === sub.ied)?.bay)
-  const clearT = run.sim.events.find(e => e.kind === 'open' && e.dev === bkr?.id)?.t ?? null
-  const ctx = { faultT: 0, clearT }
+  // Current at this merging unit stops when its own bay's breaker opens, or when the fault is cleared
+  const muBay = config.ieds.find(d => d.id === cb.ied)?.bay
+  const bkr = config.ieds.find(d => d.kind === 'breaker' && d.bay === muBay)
+  const own = run.sim.events.find(e => e.kind === 'open' && e.dev === bkr?.id)?.t ?? null
+  const cleared = run.sim.outcome.clearT ?? null
+  const clearT = [own, cleared].filter(x => x !== null).reduce((m, x) => Math.min(m, x), Infinity)
+  const ctx = { faultT: 0, clearT: Number.isFinite(clearT) ? clearT : null }
   const { zoom, time } = run
   const longView = zoom.id === 'heartbeats'
   const X0 = 46, H = 70
@@ -122,11 +126,24 @@ function Stream({ config, run, sub }) {
 
 export default function SVPanel({ config, run }) {
   const subs = config.svSubs ?? []
+  const fault = config.script?.faultLine ?? 'AB'
+  const relay = config.ieds.find(d => d.kind === 'relay' && (d.protects ?? d.line ?? d.bay) === fault)
+  const deflt = subs.find(s => s.ied === relay?.id) ?? subs[0]
+  const [pick, setPick] = useState(null)
+  const sub = subs.find(s => s.id === pick) ?? deflt
   if (!subs.length) return null
+  const muOf = s => config.svcbs.find(x => x.id === s.sv)?.ied
   return (
     <div className="flex flex-col gap-4">
-      {subs.map(s => <Stream key={s.id} config={config} run={run} sub={s} />)}
-      <p className="text-xs text-gray-400">Waveforms are synthesized from phasors (prefault load, a three-phase fault, the line de-energized after the breaker opens): they step between states, with no DC offset or transients. Primary values, illustrative 138 kV line.</p>
+      {subs.length > 1 && (
+        <label className="text-xs text-gray-600 flex items-center gap-2">Stream
+          <select value={sub.id} onChange={e => setPick(e.target.value)} className="border border-gray-300 rounded px-2 py-1 bg-white">
+            {subs.map(s => <option key={s.id} value={s.id}>{muOf(s)} → {s.ied}</option>)}
+          </select>
+        </label>
+      )}
+      <Stream key={sub.id} config={config} run={run} sub={sub} />
+      <p className="text-xs text-gray-400">Waveforms are synthesized from phasors (prefault load, a three-phase fault, nothing once this bay’s breaker has opened or the fault is cleared): they step between states, with no DC offset or transients, and every bay shows the same illustrative fault current. Primary values, illustrative 138 kV. The voltages come from the bay’s VTs, wired into the same merging unit; VT faults and a shared bus VT are not modelled.</p>
     </div>
   )
 }

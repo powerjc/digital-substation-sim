@@ -6,6 +6,11 @@ export const DEVICE_COLOR = {
   SB: '#64748b',
   GW: '#7c3aed',
   TS: '#a855f7',      // purple: the test set
+  '87-AT': '#be123c',  // rose: transformer differential
+  '52-AT': '#65a30d',  // lime
+  '87B-A': '#4338ca',  // indigo: bus differential
+  'MU-AT': '#0891b2',
+  'MU-ATL': '#155e75',
   'MU-AB': '#0891b2',  // cyan: merging units
   'MU-AX': '#0e7490',
   PBA: '#0369a1',     // LAN A
@@ -39,5 +44,6 @@ export const SUB_STATUS = {
   lost:     { label: 'LOST',      color: '#dc2626', bg: 'bg-red-100 text-red-800 border-red-300' },
   frozen:   { label: 'FROZEN',    color: '#dc2626', bg: 'bg-red-100 text-red-800 border-red-300' },
   invalid:  { label: 'INVALID',   color: '#dc2626', bg: 'bg-red-100 text-red-800 border-red-300' },
+  nosync:   { label: 'NO SYNC',   color: '#ea580c', bg: 'bg-orange-100 text-orange-800 border-orange-300' },
   none:     { label: 'NONE',      color: '#9ca3af', bg: 'bg-gray-100 text-gray-600 border-gray-300' },
 }

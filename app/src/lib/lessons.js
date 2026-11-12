@@ -4,7 +4,7 @@
 // { id, track, title, zoom: 'trip' | 'bf' | 'heartbeats', setup?(cfg), scenario,
 //   intro, watch[], tryIt[], takeaway, expect: { verdict } }
 
-export const TRACKS = ['GOOSE basics', 'Test mode', 'Two bays', 'Redundancy', 'Sampled Values']
+export const TRACKS = ['GOOSE basics', 'Test mode', 'Two bays', 'Redundancy', 'Sampled Values', 'Transformer and bus']
 
 export const LESSONS = [
   {
@@ -229,11 +229,12 @@ export const LESSONS = [
     zoom: 'trip',
     setup: cfg => { cfg.features.sampledValues = true },
     scenario: {},
-    intro: 'Merging unit MU-AB sits in the yard next to the breaker. It samples the line’s CTs and VTs and publishes them on the process bus as Sampled Values: 80 samples per cycle, 4800 a second. 21-AB no longer has CT or VT wiring; it measures from the stream.',
+    intro: 'Merging unit MU-AB sits in the yard next to the breaker. The line’s CT and VT secondaries are wired into it; it samples them and publishes the samples on the process bus as Sampled Values: 80 samples per cycle, 4800 a second. 21-AB no longer has CT or VT wiring; it measures from the stream. Breaker IED 52-AB is the bay’s process interface unit (PIU) for the binary signals, trip and position; MU-AB carries the analogs. Many installations put both in one box at the breaker; here they are drawn apart so each stream is visible.',
     watch: [
       'The Sampled Values panel draws each sample as it arrives: load current before the fault, fault current after it, nothing once the breaker has opened.',
       'The sample counter (smpCnt) restarts at 0 on every second boundary, so the fault at t = 0 is sample 0 and one cycle later is sample 80. Every merging unit synchronized to the same clock numbers the same instant the same way.',
       '21-AB trips at 16.7 ms on these samples, and the breaker opens at 52.0 ms, as with copper.',
+      'Each sample carries four currents and four voltages. The voltages come from the line VTs through the same merging unit: a VT problem (a blown VT fuse, say) would show up here as wrong voltage values and quality, which the simulator does not model.',
     ],
     tryIt: [
       'Step through and watch smpCnt and the values in “Sample at the cursor”.',
@@ -260,6 +261,64 @@ export const LESSONS = [
       'With MU-AB normal, turn on ⚙ Redundant process bus, choose RSTP, and make ring link R1 fail at the fault: samples stop for the 50 ms the ring needs, and 21-AB trips at 66.7 ms, one cycle after they return.',
     ],
     takeaway: 'Without samples a relay is blind, and it blocks rather than trip on stale data. A lost stream is a protection failure, not just a network fault: the SV alarm has to be treated like a lost CT circuit.',
+    expect: { verdict: 'noTrip' },
+  },
+  {
+    id: 'bus-87b',
+    track: 'Transformer and bus',
+    title: 'Bus differential: one message, every breaker',
+    zoom: 'trip',
+    setup: cfg => { cfg.features.transformerBay = true; cfg.script.faultLine = 'BUSA' },
+    scenario: {},
+    intro: 'Bus A now has three bays: lines A–B and A–X, and the transformer tap A–T. Bus differential 87B-A compares the currents from all three bays’ merging units: whatever flows into the bus must flow out again. The fault is on bus A itself.',
+    watch: [
+      '87B-A sees current flowing into the bus from the bays and none flowing out: it trips at 16.7 ms.',
+      'One trip GOOSE, three subscribers: 52-AB, 52-AX and 52-AT energize their coils 2.03 ms later and all open at 52.0 ms.',
+      '21-AB doesn’t trip: the fault is behind it.',
+    ],
+    tryIt: [
+      'Set the fault to line A–B (top of the bay view): current enters the bus from some bays and leaves through A–B, the sum is zero, and 87B-A stays quiet while 21-AB trips 52-AB alone.',
+      'Set the fault to transformer A–T: 87-AT compares its HV and LV merging units and trips 52-AT only.',
+    ],
+    takeaway: 'Bus differential needs every bay’s samples, and one trip message reaching every breaker on the bus. Both are network traffic now: the subscriptions to the bus trip matter as much as the wiring to an 86B lockout used to.',
+    expect: { verdict: 'delivered' },
+  },
+  {
+    id: 'bus-sync',
+    track: 'Transformer and bus',
+    title: 'One clock lost, the whole bus unprotected',
+    zoom: 'trip',
+    setup: cfg => { cfg.features.transformerBay = true; cfg.script.faultLine = 'BUSA' },
+    scenario: { svFault: { 'AX.SV': { kind: 'sync', at: -1.0 } } },
+    intro: 'The same bus fault, but merging unit MU-AX lost its time synchronization 1 s earlier (its PTP connection failed, say).',
+    watch: [
+      'Since −1.000 s MU-AX’s samples carry smpSynch 0, with an alarm. 21-AX, which only uses MU-AX, carries on.',
+      '87B-A can no longer line MU-AX’s samples up with the others, so it blocks. At the fault it doesn’t trip, and nothing at bus A clears the fault.',
+    ],
+    tryIt: [
+      'Set the fault to line A–B: 21-AB trips normally. A function using one merging unit doesn’t need a common clock.',
+      'Tap MU-AX and set it back to normal: 87B-A trips again at 16.7 ms.',
+    ],
+    takeaway: 'Time is part of the protection for every function that compares merging units, 87B and 87T. Losing sync at one merging unit blocks the bus protection for all bays (Foundations E2 and E4); the sync alarm is a protection alarm.',
+    expect: { verdict: 'noTrip' },
+  },
+  {
+    id: 'xfmr-87t',
+    track: 'Transformer and bus',
+    title: 'Transformer differential: both sides or nothing',
+    zoom: 'trip',
+    setup: cfg => { cfg.features.transformerBay = true; cfg.script.faultLine = 'XFMRAT' },
+    scenario: { svFault: { 'ATL.SV': { kind: 'stop', at: -2.0 } } },
+    intro: 'A fault inside transformer A–T. 87-AT compares the HV current (merging unit MU-AT) with the LV current (MU-ATL). The LV merging unit failed 2 s before.',
+    watch: [
+      '87-AT has HV samples but none from the LV side: its differential has been blocked, with an SV alarm, since just after −2 s.',
+      'At the fault 87-AT doesn’t trip and 52-AT stays closed.',
+    ],
+    tryIt: [
+      'Tap MU-ATL and set it back to normal: 87-AT trips 52-AT at 16.7 ms, open at 52.0 ms.',
+      'Then set the fault to line A–B and make 52-AB stick: breaker failure now opens 52-AX and 52-AT, both at 185.4 ms.',
+    ],
+    takeaway: 'A differential is only as good as its weakest stream: lose either side’s merging unit and the transformer has no fast protection of its own.',
     expect: { verdict: 'noTrip' },
   },
 ]

@@ -47,7 +47,7 @@ function Budget({ outcome }) {
 }
 
 export default function OutcomeCard({ outcome, revealed, onReveal }) {
-  const v = VERDICT[outcome.verdict]
+  const v = VERDICT[outcome.verdict] ?? { label: 'No fault in a protected zone', style: 'bg-gray-100 text-gray-700 border-gray-300' }
   const f = outcome.freqHz
   return (
     <div className="px-4 py-3">
@@ -64,8 +64,8 @@ export default function OutcomeCard({ outcome, revealed, onReveal }) {
         <>
           <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs">
             {outcome.tripT !== null && <><dt className="text-gray-500">Relay trip</dt><dd className="font-mono">{fmtProt(outcome.tripT, f)}</dd></>}
-            <dt className="text-gray-500">{outcome.breaker ?? ''} trip coil</dt><dd className="font-mono">{outcome.coilT !== null ? fmtProt(outcome.coilT, f) : 'never'}</dd>
-            <dt className="text-gray-500">{outcome.breaker ?? 'Breaker'} open</dt><dd className="font-mono">{outcome.openT !== null ? fmtProt(outcome.openT, f) : 'never'}</dd>
+            <dt className="text-gray-500">{outcome.multi ? 'First trip coil' : `${outcome.breaker ?? ''} trip coil`}</dt><dd className="font-mono">{outcome.coilT !== null ? fmtProt(outcome.coilT, f) : 'never'}</dd>
+            {!outcome.multi && <><dt className="text-gray-500">{outcome.breaker ?? 'Breaker'} open</dt><dd className="font-mono">{outcome.openT !== null ? fmtProt(outcome.openT, f) : 'never'}</dd></>}
             {outcome.bfT !== null && <><dt className="text-gray-500">BF trip</dt><dd className="font-mono">{fmtProt(outcome.bfT, f)}</dd></>}
             {outcome.bfOpens?.map(o => <span key={o.dev} className="contents"><dt className="text-gray-500">{o.dev} open</dt><dd className="font-mono">{o.t !== null ? fmtProt(o.t, f) : 'never'}</dd></span>)}
           </dl>

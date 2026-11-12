@@ -55,7 +55,7 @@ function applyRSTP(c) {
   const pb = c.switches.find(s => s.id === 'PB')
   c.switches = c.switches.filter(s => s.id !== 'PB')
   const kindOf = id => c.ieds.find(d => d.id === id)?.kind
-  const sideOf = end => (['breaker', 'mu'].includes(kindOf(end.split(':')[0])) ? 'PB2' : 'PB1')
+  const sideOf = end => (['breaker', 'mu'].includes(kindOf(end.split(':')[0].split('.')[0])) ? 'PB2' : 'PB1')
   const ports = { PB1: { 7: { vlans: [10] }, 8: { vlans: [10] } }, PB2: { 7: { vlans: [10] }, 8: { vlans: [10] } } }
   c.links = c.links.map(l => {
     const pbEnd = [l.a, l.b].find(e => e.startsWith('PB:'))
@@ -89,29 +89,78 @@ function addTestSet(c) {
 // Sampled Values: a merging unit in each line bay on the process bus, publishing
 // the bay's CT and VT samples; the line relay subscribes instead of being wired.
 function addMergingUnits(c) {
-  const bays = c.ieds.filter(d => d.kind === 'relay').map(d => ({ relay: d.id, bay: d.bay }))
   const pb = c.switches.find(s => s.id === 'PB')
   c.svcbs = []
   c.svSubs = []
-  bays.forEach(({ relay, bay }, i) => {
-    const n = i + 1, id = `MU-${bay}`, port = 5 + i
-    c.ieds.push({ id, kind: 'mu', bay, name: `MergingUnit${bay}`, label: 'Merging unit', mac: `02-00-00-${bay === 'AB' ? 'AB' : 'AE'}-00-4D`, mode: 'on', lphdSim: false })
+  // One merging unit per bay with a breaker (its bus-side CTs and VTs), plus the
+  // transformer's LV side
+  const units = c.ieds.filter(d => d.kind === 'breaker').map(d => ({ bay: d.bay, id: `MU-${d.bay}`, hex: d.bay === 'AB' ? 'AB' : d.bay === 'AX' ? 'AE' : 'A7' }))
+  if (c.ieds.some(d => d.id === '87-AT')) units.push({ bay: 'AT', id: 'MU-ATL', hex: 'A8', lv: true })
+  units.forEach((u, i) => {
+    const n = i + 1, port = 5 + i
+    c.ieds.push({ id: u.id, kind: 'mu', bay: u.bay, name: `MergingUnit${u.id.slice(3)}`, label: u.lv ? 'LV side' : 'Merging unit', mac: `02-00-00-${u.hex}-00-4D`, mode: 'on', lphdSim: false })
     pb.ports[port] = { vlans: [10] }
-    c.links.push({ id: `M${n}`, a: id, b: `PB:${port}` })
-    const sv = {
-      id: `${bay}.SV`, ied: id, label: 'SV', svID: `MU_${bay}_SV`,
-      msvRef: `MergingUnit${bay}MU/LLN0$MS$SV`, datSet: `MergingUnit${bay}MU/LLN0$PhsMeas1`,
+    c.links.push({ id: `M${n}`, a: u.id, b: `PB:${port}` })
+    c.svcbs.push({
+      id: `${u.id.slice(3)}.SV`, ied: u.id, label: 'SV', svID: `MU_${u.id.slice(3)}_SV`,
+      msvRef: `MergingUnit${u.id.slice(3)}MU/LLN0$MS$SV`, datSet: `MergingUnit${u.id.slice(3)}MU/LLN0$PhsMeas1`,
       mac: `01-0C-CD-04-00-0${n}`, appid: 0x4000 + n, vlan: { id: 10, priority: 4 }, confRev: 1,
       smpPerCycle: 80, noASDU: 1, length: 123,
-    }
-    c.svcbs.push(sv)
-    c.svSubs.push({ id: `${relay}.SV`, ied: relay, sv: sv.id, use: 'measure' })
+    })
   })
+  // Who measures from which stream
+  for (const r of c.ieds.filter(d => d.kind === 'relay')) {
+    const uses = r.id === '87B-A' ? ['AB', 'AX', 'AT'] : r.id === '87-AT' ? ['AT', 'ATL'] : [r.bay]
+    for (const u of uses) {
+      if (!c.svcbs.some(x => x.id === `${u}.SV`)) continue
+      c.svSubs.push({ id: uses.length > 1 ? `${r.id}.SV-${u}` : `${r.id}.SV`, ied: r.id, sv: `${u}.SV`, use: 'measure' })
+    }
+  }
   return c
 }
 
-export function stationConfig(config) {
+// Transformer tap A–T behind feeder breaker 52-AT, with transformer
+// differential 87-AT, and bus differential 87B-A for bus A (SPEC § 2.1)
+function addTransformerBay(c) {
+  const pb = c.switches.find(s => s.id === 'PB'), sb = c.switches.find(s => s.id === 'SB')
+  c.ieds.push(
+    { id: '87-AT', kind: 'relay', bay: 'AT', protects: 'XFMRAT', name: 'XfmrProtAT', label: 'Transformer diff.', mac: '02-00-00-A7-00-87', mode: 'on', lphdSim: false },
+    { id: '52-AT', kind: 'breaker', bay: 'AT', name: 'BkrCtlAT', label: 'Breaker IED (PIU)', mac: '02-00-00-A7-00-52', mode: 'on', lphdSim: false },
+    { id: '87B-A', kind: 'relay', bay: 'BUS', protects: 'BUSA', name: 'BusProtA', label: 'Bus differential', mac: '02-00-00-BA-00-87', mode: 'on', lphdSim: false },
+  )
+  for (const p of [10, 11, 12]) pb.ports[p] = { vlans: [10] }
+  for (const p of [4, 5]) sb.ports[p] = { vlans: [20] }
+  c.links.push(
+    { id: 'T1', a: '87-AT:P', b: 'PB:10' },
+    { id: 'T2', a: 'PB:11', b: '52-AT' },
+    { id: 'T3', a: '87-AT:S', b: 'SB:4' },
+    { id: 'B1', a: '87B-A:P', b: 'PB:12' },
+    { id: 'B2', a: '87B-A:S', b: 'SB:5' },
+  )
+  const tripE = [{ ref: 'PROT/PTRC1.Tr.general', type: 'BOOLEAN', signal: 'trip' }, { ref: 'PROT/PTRC1.Tr.q', type: 'Quality', signal: 'trip' }]
+  const posE = [{ ref: 'CTRL/XCBR1.Pos.stVal', type: 'Dbpos', signal: 'pos' }, { ref: 'CTRL/XCBR1.Pos.q', type: 'Quality', signal: 'pos' }]
+  const atTrip = gocb('AT.Trip', '87-AT', 'Trip', 'XfmrProtAT', 'PROT', 'Trip', 'DS_Trip', 'AT_Trip', '01-0C-CD-01-00-21', 0x0301, tripE, 'P')
+  const atPos = gocb('AT.Pos', '52-AT', 'Position', 'BkrCtlAT', 'CTRL', 'Pos', 'DS_Pos', 'AT_Pos', '01-0C-CD-01-00-22', 0x0302, posE)
+  const busTrip = gocb('BUS.Trip', '87B-A', 'Trip', 'BusProtA', 'PROT', 'Trip', 'DS_Trip', 'BUS_Trip', '01-0C-CD-01-00-31', 0x0401, tripE, 'P')
+  c.gocbs.push(atTrip, atPos, busTrip)
+  c.subscriptions.push(
+    subOf('52-AT.Trip', '52-AT', atTrip, 'tripCoil'),
+    subOf('87-AT.Pos', '87-AT', atPos, 'breakerPos'),
+    ...['52-AB', '52-AX', '52-AT'].map(b => subOf(`${b}.BUS`, b, busTrip, 'tripCoil')),
+  )
+  // Breaker failure in a line bay also trips the transformer feeder (bus A cleared)
+  for (const g of c.gocbs.filter(x => x.entries.some(e => e.signal === 'bf'))) c.subscriptions.push(subOf(`52-AT.BF-${g.ied.slice(-2)}`, '52-AT', g, 'tripCoil'))
+  return c
+}
+
+export function stationConfig(config0) {
+  // The transformer bay brings the second bay and Sampled Values with it; without
+  // it, a fault set on the bus or the transformer falls back to line A–B
+  const config = isActive(config0, 'transformerBay')
+    ? { ...config0, features: { ...config0.features, secondBay: true, sampledValues: true } }
+    : ['BUSA', 'XFMRAT'].includes(config0.script?.faultLine) ? { ...config0, script: { ...config0.script, faultLine: 'AB' } } : config0
   let base = buildStation(config)
+  if (isActive(config, 'transformerBay')) base = addTransformerBay(base === config ? structuredClone(config) : base)
   if (isActive(config, 'sampledValues')) base = addMergingUnits(base === config ? structuredClone(config) : base)
   if (!isActive(config, 'redundancy')) return base
   const c = base === config ? structuredClone(config) : base
@@ -123,7 +172,7 @@ function buildStation(config) {
   const c = structuredClone(config)
   c.ieds.push(
     { id: '21-AX', kind: 'relay', bay: 'AX', line: 'AX', name: 'LineProtAX', label: 'Line relay', mac: '02-00-00-AE-00-21', mode: 'on', lphdSim: false },
-    { id: '52-AX', kind: 'breaker', bay: 'AX', name: 'BkrCtlAX', label: 'Breaker IED', mac: '02-00-00-AE-00-52', mode: 'on', lphdSim: false },
+    { id: '52-AX', kind: 'breaker', bay: 'AX', name: 'BkrCtlAX', label: 'Breaker IED (PIU)', mac: '02-00-00-AE-00-52', mode: 'on', lphdSim: false },
   )
   // Breaker failure in both line relays
   for (const r of c.ieds.filter(d => d.kind === 'relay')) r.bf = true

@@ -9,7 +9,7 @@ Pure simulation logic lives in `app/src/lib/` (no React — keep it that way so 
 | File | Role |
 |------|------|
 | `schema.js` | Config schema (v2; v1 migrates): the station as data (IEDs, switches, links, GOOSE control blocks, subscriptions), scripted timing, stack and network figures, `features`. `migrateConfig()`, `PROFILES` (retransmission), `TRIP_CLASS` |
-| `station.js` | `stationConfig(config)`: the station the engine runs. Station bus SB + process bus PB in the base config; feature `secondBay` adds bay A–X and breaker-failure GOOSE; feature `testMode` adds the test set TS on PB port 9; feature `sampledValues` adds merging units MU-<bay> with `svcbs` / `svSubs`; feature `redundancy` splits PB into PRP LANs PBA / PBB (switch `lan: 'A' | 'B'`, IED ports `P.A` / `P.B`, breaker `A` / `B`), or with `network.redundancy: 'rstp'` into ring switches PB1 / PB2 with links R1 (`rstp: 'active'`) and R2 (`rstp: 'standby'`, `backs: 'R1'`) |
+| `station.js` | `stationConfig(config)`: the station the engine runs. Station bus SB + process bus PB in the base config; feature `secondBay` adds bay A–X and breaker-failure GOOSE; feature `testMode` adds the test set TS on PB port 9; feature `transformerBay` (implies `secondBay` + `sampledValues`) adds 87-AT, 52-AT, 87B-A (relays have a zone: `protects` 'XFMRAT' / 'BUSA', else `line`); feature `sampledValues` adds merging units MU-<bay> (+ MU-ATL) with `svcbs` / `svSubs`; feature `redundancy` splits PB into PRP LANs PBA / PBB (switch `lan: 'A' | 'B'`, IED ports `P.A` / `P.B`, breaker `A` / `B`), or with `network.redundancy: 'rstp'` into ring switches PB1 / PB2 with links R1 (`rstp: 'active'`) and R2 (`rstp: 'standby'`, `backs: 'R1'`) |
 | `scenario.js` | Injected failures (`linkDown`, `drops`, `subWrong`, `vlanMissing`, `iedMode`, `breakerStuck`, `switchDown`), `applyScenario()` (engineering errors applied to a config copy), fixed `LINK_PRESETS` |
 | `network.js` | Topology from links, `forward()`: carries a frame through store-and-forward switches (VLAN membership on ingress and egress, link down, explicit drops), hop timing |
 | `goose.js` | Frame building and length estimate, the subscriber's checks in order: `matchFrame` (filter: MAC/APPID → ignored; identity: gocbRef/datSet/confRev → rejected), `sequenceCheck`, `testHandling` (slice 1.1 hook, pass-through now) |
@@ -45,7 +45,7 @@ Data flow: `App` (config) → `stationConfig` → `useRun` (scenario, zoom, play
 
 1. `npm test` in `app/` (Vitest: `sim.test.js` with every lesson, `foundations.test.js` with every chapter figure and glossary link)
 2. `npm run build`
-3. UI changes: screenshot with headless Chromium (Playwright, outside the project); check desktop, phone (390×844) and ultrawide (3440×1440) when layout changes
+3. UI changes: screenshot with headless Chromium (Playwright, outside the project); check desktop and ultrawide (3440×1440) when layout changes, and that phone (390×844) still renders readably (phone is for review and debugging, not optimized)
 4. Docs: SPEC § Status & backlog, README
 
 ## Run

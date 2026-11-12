@@ -86,6 +86,43 @@ const LAYOUTS = {
     TS: { x: 30, y: 800, w: 256, h: 38 },
     PB: { x: 312, y: 60, w: 18, h: 784, bar: true },
   },
+  // Transformer bay and bus differential: three bays, compact boxes (status as chips)
+  wide3: {
+    vb: [0, 0, 640, 614], compact: true,
+    GW: { x: 6, y: 250, w: 118, h: 72 },
+    SB: { x: 146, y: 8, w: 26, h: 540, bar: true },
+    '21-AB': { x: 196, y: 12, w: 196, h: 104 },
+    '21-AX': { x: 196, y: 160, w: 196, h: 104 },
+    '87-AT': { x: 196, y: 312, w: 196, h: 104 },
+    '87B-A': { x: 196, y: 440, w: 196, h: 104 },
+    PB: { x: 416, y: 8, w: 26, h: 560, bar: true },
+    '52-AB': { x: 466, y: 12, w: 168, h: 96 },
+    'MU-AB': { x: 466, y: 112, w: 168, h: 40 },
+    '52-AX': { x: 466, y: 160, w: 168, h: 96 },
+    'MU-AX': { x: 466, y: 260, w: 168, h: 40 },
+    '52-AT': { x: 466, y: 312, w: 168, h: 110 },
+    'MU-AT': { x: 466, y: 426, w: 168, h: 40 },
+    'MU-ATL': { x: 466, y: 470, w: 168, h: 40 },
+    TS: { x: 379, y: 574, w: 100, h: 34 },
+  },
+  narrow3: {
+    vb: [0, 0, 350, 1046], compact: true,
+    SB: { x: 4, y: 4, w: 18, h: 500, bar: true },
+    GW: { x: 30, y: 4, w: 256, h: 48 },
+    '21-AB': { x: 30, y: 60, w: 256, h: 104 },
+    '21-AX': { x: 30, y: 172, w: 256, h: 104 },
+    '87-AT': { x: 30, y: 284, w: 256, h: 104 },
+    '87B-A': { x: 30, y: 396, w: 256, h: 104 },
+    '52-AB': { x: 30, y: 512, w: 256, h: 96 },
+    'MU-AB': { x: 30, y: 614, w: 256, h: 40 },
+    '52-AX': { x: 30, y: 660, w: 256, h: 96 },
+    'MU-AX': { x: 30, y: 762, w: 256, h: 40 },
+    '52-AT': { x: 30, y: 808, w: 256, h: 104 },
+    'MU-AT': { x: 30, y: 918, w: 256, h: 40 },
+    'MU-ATL': { x: 30, y: 964, w: 256, h: 40 },
+    TS: { x: 30, y: 1010, w: 256, h: 38 },
+    PB: { x: 312, y: 56, w: 18, h: 994, bar: true },
+  },
   narrow2: {
     vb: [0, 0, 340, 492],
     GW: { x: 100, y: 4, w: 140, h: 52 },
@@ -192,7 +229,38 @@ function Lamp({ x, y, on, color = '#dc2626', label }) {
   )
 }
 
-export default function StationView({ config, run }) {
+// Compact subscription status: one row of chips
+function chipLabel(config, sub) {
+  if (sub.sv) return `SV ${sub.sv.replace('.SV', '')}`
+  const g = config.gocbs.find(x => x.id === sub.gocb)
+  if (g.label === 'Trip') return g.ied.startsWith('87B') ? '87B' : g.ied.startsWith('87') ? '87T' : 'Trip'
+  if (g.label === 'BF trip') return `BF ${g.ied.slice(-2)}`
+  return g.label === 'Position' ? 'Pos' : g.label
+}
+function Chips({ x, y, maxW, items }) {
+  let cx = x, cy = y
+  return (
+    <g>
+      {items.map((it, i) => {
+        const s = SUB_STATUS[it.status] ?? SUB_STATUS.noMsg
+        const w = it.label.length * 5.6 + 12
+        if (cx + w > x + maxW) { cx = x; cy += 15 }
+        const el = (
+          <g key={i}>
+            <rect x={cx} y={cy - 10} width={w} height={13} rx={3} fill={s.color} fillOpacity={it.status === 'healthy' ? 0.12 : 0.22} stroke={s.color} strokeWidth={0.75} />
+            <text x={cx + w / 2} y={cy} textAnchor="middle" fontSize={8.5} fontWeight="700" fill={s.color}>{it.label}</text>
+          </g>
+        )
+        cx += w + 4
+        return el
+      })}
+    </g>
+  )
+}
+
+const FAULT_PLACES = [{ id: 'AB', label: 'line A–B' }, { id: 'BUSA', label: 'bus A' }, { id: 'XFMRAT', label: 'transformer A–T' }]
+
+export default function StationView({ config, run, onFaultAt }) {
   const [sel, setSel] = useState(null) // { type: 'link' | 'ied' | 'switch', id }
   const { state, time, sim, scenario, setScenario, zoom } = run
   const detail = isActive(config, 'networkDetail')
@@ -202,7 +270,9 @@ export default function StationView({ config, run }) {
   const prpOn = config.switches.some(x => x.id === 'PBA')
   const ringOn = config.switches.some(x => x.id === 'PB1')
   const svOn = config.ieds.some(d => d.kind === 'mu')
-  const LAYOUT0 = (L => (prpOn ? splitPB(L) : ringOn ? splitRing(L) : L))(LAYOUTS[(narrow ? 'narrow' : 'wide') + (two ? '2' : '') + (svOn ? 'sv' : '')])
+  const three = config.ieds.some(d => d.id === '87B-A')
+  const LAYOUT0 = (L => (prpOn ? splitPB(L) : ringOn ? splitRing(L) : L))(LAYOUTS[(narrow ? 'narrow' : 'wide') + (three ? '3' : (two ? '2' : '') + (svOn ? 'sv' : ''))])
+  const compact = !!LAYOUT0.compact
   // The view box ends below the lowest device present (the test set only with test mode)
   const present = [...config.ieds.map(d => d.id), ...config.switches.map(x => x.id)].filter(id => LAYOUT0[id])
   const LAYOUT = { ...LAYOUT0, vb: [0, 0, LAYOUT0.vb[2], Math.max(...present.map(id => LAYOUT0[id].y + LAYOUT0[id].h)) + 6] }
@@ -255,8 +325,15 @@ export default function StationView({ config, run }) {
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-baseline justify-between gap-2">
-        <h3 className="text-sm font-semibold text-gray-700">{two ? 'Bus A: bays A–B and A–X' : 'Bay A–B'}<HelpLink chapter="A1" /></h3>
-        <span className="text-xs text-gray-400">Tap a device or link to break it</span>
+        <h3 className="text-sm font-semibold text-gray-700">{three ? 'Bus A: lines A–B, A–X and transformer A–T' : two ? 'Bus A: bays A–B and A–X' : 'Bay A–B'}<HelpLink chapter="A1" /></h3>
+        {three && onFaultAt && (
+          <label className="text-xs text-gray-600 flex items-center gap-1">Fault on
+            <select value={config.script?.faultLine ?? 'AB'} onChange={e => onFaultAt(e.target.value)} className="border border-gray-300 rounded px-1.5 py-0.5 bg-white">
+              {FAULT_PLACES.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+            </select>
+          </label>
+        )}
+        <span className="text-xs text-gray-400 hidden sm:inline">Tap a device or link to break it</span>
       </div>
       <svg viewBox={LAYOUT.vb.join(' ')} className="w-full h-auto select-none" role="img" aria-label="Station view: relay, switch and breaker IED">
         {/* Links */}
@@ -370,11 +447,14 @@ export default function StationView({ config, run }) {
           const mode = scenario.iedMode[d.id]
           const simOn = scenario.simMode.includes(d.id)
           const stuck = scenario.breakerStuck.includes(d.id)
+          // Protection blocked: a stream it uses is unusable, or (comparing several) not on a common clock
+          const mySv = (config.svSubs ?? []).filter(x => x.ied === d.id).map(x => state.sv?.[x.id]).filter(Boolean)
+          const blocked = mySv.some(v => v.status !== 'healthy') || (mySv.length > 1 && (new Set(mySv.map(v => v.synch)).size > 1 || mySv.some(v => v.synch === 0)))
           return (
             <g key={d.id} {...selectable('ied', d.id)}>
               <rect x={b.x} y={b.y} width={b.w} height={b.h} rx={8} fill="#fff"
                 stroke={isSel('ied', d.id) ? '#4f46e5' : color} strokeWidth={isSel('ied', d.id) ? 2.5 : 1.5} />
-              <text x={b.x + 10} y={b.y + 19} fontSize={14} fontWeight="700" fill={color}>{d.id}</text>
+              <text x={b.x + 10} y={b.y + 19} fontSize={compact ? 13 : 14} fontWeight="700" fill={color}>{d.id}</text>
               <text x={b.x + b.w - 10} y={b.y + 19} fontSize={10} fill="#6b7280" textAnchor="end">{d.label}{wrong ? ' ⚠' : ''}</text>
               {mode && mode !== 'on' && (
                 <g>
@@ -388,13 +468,44 @@ export default function StationView({ config, run }) {
                   <text x={b.x + b.w - 42} y={(mode && mode !== 'on' ? b.y + 44 : b.y + 26) + 10} textAnchor="middle" fontSize={9} fontWeight="700" fill="#6b21a8">SIM MODE</text>
                 </g>
               )}
+              {blocked && (
+                <g>
+                  <rect x={b.x + b.w - 74} y={b.y + 26} width={64} height={14} rx={3} fill="#dc2626" fillOpacity={0.15} stroke="#dc2626" strokeWidth={0.75} />
+                  <text x={b.x + b.w - 42} y={b.y + 36} textAnchor="middle" fontSize={9} fontWeight="700" fill="#dc2626">BLOCKED</text>
+                </g>
+              )}
               {stuck && (
                 <g transform={`translate(0 ${(mode && mode !== 'on') || simOn ? 0 : -18})`}>
                   <rect x={b.x + b.w - 74} y={b.y + 44} width={64} height={14} rx={3} fill="#dc2626" fillOpacity={0.12} stroke="#dc2626" strokeWidth={0.75} />
                   <text x={b.x + b.w - 42} y={b.y + 54} textAnchor="middle" fontSize={9} fontWeight="700" fill="#dc2626">STUCK</text>
                 </g>
               )}
-              {d.kind === 'relay' ? (
+              {compact ? (() => {
+                const hasPos = subs.some(x => x.use === 'breakerPos')
+                const items = [...subs.map(x => ({ label: chipLabel(config, x), status: subOf(x.id) })),
+                  ...(config.svSubs ?? []).filter(x => x.ied === d.id).map(x => {
+                    const v = state.sv?.[x.id]
+                    return { label: chipLabel(config, x), status: v && v.status !== 'healthy' ? v.status : v?.synch === 0 ? 'nosync' : 'healthy' }
+                  })]
+                return (
+                  <>
+                    {d.kind === 'relay' ? (
+                      <>
+                        <Lamp x={b.x + 10} y={b.y + 38} on={s.trip} label="Trip" />
+                        {d.bf && <Lamp x={b.x + 60} y={b.y + 38} on={s.bf} color="#ea580c" label="BF" />}
+                        {hasPos && <text x={b.x + 10} y={b.y + 56} fontSize={10} fill="#374151">sees breaker: <tspan fontWeight="700">{s.seenPos ? POS_TEXT[s.seenPos] : '—'}</tspan></text>}
+                      </>
+                    ) : (
+                      <>
+                        <Lamp x={b.x + 10} y={b.y + 38} on={s.coil} label="Trip coil" />
+                        <rect x={b.x + 10} y={b.y + 46} width={10} height={10} fill={s.contactsClosed ? '#dc2626' : '#16a34a'} />
+                        <text x={b.x + 24} y={b.y + 55} fontSize={10} fill="#374151">Breaker <tspan fontWeight="700">{s.contactsClosed ? 'CLOSED' : 'OPEN'}</tspan></text>
+                      </>
+                    )}
+                    <Chips x={b.x + 10} y={b.y + (d.kind === 'relay' && !hasPos ? 58 : 74)} maxW={b.w - 20} items={items} />
+                  </>
+                )
+              })() : d.kind === 'relay' ? (
                 <>
                   <Lamp x={b.x + 10} y={b.y + 44} on={s.trip} label="PTRC trip" />
                   {d.bf && <Lamp x={b.x + 90} y={b.y + 44} on={s.bf} color="#ea580c" label="BF" />}
@@ -414,15 +525,15 @@ export default function StationView({ config, run }) {
                   </g>
                 </>
               )}
-              {subs.map((x, i) => (
+              {!compact && subs.map((x, i) => (
                 <SubBadge key={x.id} x={b.x + 10} y={b.y + 96 + i * 18}
                   label={`Sub ${config.gocbs.find(g => g.id === x.gocb).label}`} status={subOf(x.id)} />
               ))}
-              {svSub(d.id) && (
+              {!compact && svSub(d.id) && (
                 <SubBadge x={b.x + 10} y={b.y + 96 + subs.length * 18} label="Sub SV" status={state.sv?.[svSub(d.id).id]?.status ?? 'healthy'} />
               )}
               <text x={b.x + 10} y={b.y + b.h - 8} fontSize={9} fill="#9ca3af">
-                pub {config.gocbs.filter(g => g.ied === d.id).map(g => g.label).join(', ')}
+                {compact && d.protects ? `${d.protects === 'BUSA' ? 'zone: bus A' : 'zone: transformer'} · ` : ''}pub {config.gocbs.filter(g => g.ied === d.id).map(g => g.label).join(', ')}
               </text>
               {state.prp?.[d.id] && (
                 <text x={b.x + b.w - 10} y={b.y + b.h - 8} fontSize={9} textAnchor="end" fontWeight="700">

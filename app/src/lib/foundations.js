@@ -117,7 +117,7 @@ export const CHAPTERS = [
     body: [
       'IEC 61850 has a message type for each. {{MMS}} takes over the RTU’s job. It is {{client/server}}: a client (the gateway or HMI) asks a server (an IED) for values, sets up {{reports}} that the IED sends when values change, and operates breakers with {{select-before-operate}} controls. It runs over TCP/IP (A5), and an answer within a second or so is fine.',
       '{{GOOSE}} takes over the trip, block and status wiring between IEDs. It is publish/subscribe (A3): the publisher multicasts a message whenever a value changes and keeps repeating it, and every IED configured to listen acts on it, within a few milliseconds.',
-      '{{Sampled Values}} take over the CT and VT secondary wiring. A {{merging unit}} in the yard measures currents and voltages and publishes a continuous stream of samples, typically 80 per cycle: 4800 messages a second at 60 Hz, from every merging unit, all the time. The relays subscribe to the streams they need.',
+      '{{Sampled Values}} take over the CT and VT secondary wiring. A {{merging unit}} in the yard has the CT and VT secondaries wired into it, measures the currents and voltages, and publishes a continuous stream of samples, typically 80 per cycle: 4800 messages a second at 60 Hz, from every merging unit, all the time. The relays subscribe to the streams they need. A bus VT shared by several bays usually gets a merging unit and a stream of its own.',
       'This module and the bay simulator concentrate on GOOSE. Sampled Values get their own simulator slice later; MMS appears where SCADA meets the station.',
     ],
     figure: 'kinds',
@@ -229,6 +229,7 @@ export const CHAPTERS = [
       'Copper doesn’t disappear; it moves to the edge. A {{breaker IED}} (or a merging unit with binary I/O) mounted at the breaker does the wiring-heavy work locally. Its {{binary inputs}} read 52a and 52b. Its {{binary outputs}} are real contacts: the trip output in series with 52a and the trip coil, the close output with 52b and the close coil.',
       'The two auxiliary contacts become one {{double point}} value, `XCBR1.Pos.stVal`, published as GOOSE (B2). 52a closed and 52b open is **on** (10). 52a open and 52b closed is **off** (01). Both open is **intermediate** (00): the breaker is moving. Both closed is **bad** (11): a contact or wiring fault. Reading both contacts is what lets the IED tell “open” from “a broken wire”: a lasting intermediate or bad state is an alarm.',
       'Supervision moves too. The breaker IED can supervise its own trip and close circuits and publish the result, so trip-circuit supervision reaches the relay and SCADA as a message instead of an alarm contact.',
+      'The breaker IED is often called a {{PIU}}, a process interface unit: the binary half of the yard. The analog half is the {{merging unit}}, with the CT and VT secondaries wired into it (four currents and four voltages per bay, typically). Some installations use two boxes at the breaker, others one combined device that publishes Sampled Values and also takes the GOOSE trip and publishes the position. The bay simulator draws them apart so each stream can be seen, and fail, on its own.',
       'What is left of the copper is short, local and testable with a meter. Everything between the bay and the control house is network.',
     ],
     figure: 'dryContacts',

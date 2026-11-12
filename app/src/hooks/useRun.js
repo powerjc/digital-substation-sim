@@ -7,7 +7,7 @@ import { isActive } from '../lib/features'
 // milliseconds, the heartbeat is seconds.
 export const ZOOMS = {
   trip: { id: 'trip', label: 'Around the trip', t0: -0.005, t1: 0.085, speeds: [0.002, 0.005, 0.02], speed: 0.005 },
-  bf: { id: 'bf', label: 'Up to 250 ms', t0: -0.01, t1: 0.25, speeds: [0.005, 0.01, 0.05], speed: 0.01, feature: ['secondBay', 'redundancy'] },
+  bf: { id: 'bf', label: 'Up to 250 ms', t0: -0.01, t1: 0.25, speeds: [0.005, 0.01, 0.05], speed: 0.01, feature: ['secondBay', 'redundancy', 'transformerBay'] },
   heartbeats: { id: 'heartbeats', label: 'Heartbeats', t0: -3.0, t1: 2.5, speeds: [0.1, 0.25, 1], speed: 0.25 },
 }
 

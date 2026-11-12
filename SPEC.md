@@ -53,7 +53,18 @@
 **For the user's review (SV)**
 11. Relay behaviour is a teaching model: 1 ms loss detection, "a cycle of valid samples" before tripping, block on lost / frozen / invalid, carry on when only sync is lost (single merging unit). Confirm or give typical figures.
 12. Phone layout with SV: both buses become vertical bars down the sides with the devices stacked between them (long on two bays).
-13. Next candidates: slice 4 (transformer bay A–T with HV/LV merging units, 87T, and 87B from all bays' SV, which is where sync loss starts to block), the time-sync simulator slice (6), or MMS on the station bus.
+13. ~~Next~~: slice 4 chosen and built (below).
+
+**Built 2026-11-11: slice 4, transformer bay and bus differential** (⚙ Transformer bay and bus differential, off by default; brings the second bay and SV; schema v7). Transformer tap A–T: 87-AT (transformer differential, HV merging unit MU-AT and LV MU-ATL) tripping feeder breaker 52-AT; bus differential 87B-A on bus A from MU-AB, MU-AX, MU-AT, one trip GOOSE subscribed by 52-AB, 52-AX and 52-AT; line breaker failure also trips 52-AT. Fault location (line A–B, bus A, transformer A–T) chosen in the bay view (`script.faultLine`; each relay has a zone, `protects` or `line`). Relays comparing several merging units block when any stream is unusable or the streams are not on a common clock (the Foundations E4 rule, live). Compact three-bay layout with status chips, BLOCKED badge, NO SYNC chip; Sampled Values panel picks one stream at a time. Outcome for a relay tripping several breakers. Lessons (track *Transformer and bus*): *Bus differential: one message, every breaker*, *One clock lost, the whole bus unprotected*, *Transformer differential: both sides or nothing*. 135 tests.
+
+**For the user's review (slice 4)**
+14. Zones and behaviour are scripted, not computed: a bus fault is seen only by 87B, a transformer fault only by 87T, a line fault only by the line relay; every bay's waveforms show the same illustrative fault current. Breaker failure on a line trips 52-AT too (bus A cleared). 86 lockouts for 87B / 87T are not modelled (Foundations C4 covers them).
+15. Next candidates: the time-sync slice (grandmaster, holdover, sync alarms feeding 87B), MMS on the station bus, or a review / polish pass across lessons.
+
+**Decided 2026-11-12 (user review)**
+- **Phone views: viewable, not optimized.** Phones are used for review and debugging; layouts must render readably but needn't be comfortable to use. Desktop is the primary target (relaxes the phone emphasis in § 5 and § 10). Items 5 and 12 above are accepted as is.
+- **Breaker IED = PIU, made explicit.** The breaker IED is the bay's process interface unit (binary signals: trip / close out, 52a / 52b position in); the merging unit carries the analogs. The simulator keeps them as two devices so each stream is visible and can fail on its own; Foundations C3, the glossary (PIU) and *The CT wiring is a stream* say that combined MU / PIU devices are common.
+- **VT inputs: passing mention.** The bay VTs are wired into the same merging unit (four currents and four voltages per sample, as drawn). VT fuse failure, voltage selection and a shared bus VT with its own merging unit are mentioned (Foundations B1, C3, the SV lesson and panel) but not modelled.
 
 **Backlog:** see § 9.
 
@@ -325,7 +336,7 @@ None open for slice 1. Settled in review (2026-11-11): load tap = transformer be
 - **1.1 Test mode** (built 2026-11-11): Mod/Beh, test flags, lesson *The relay was left in test*. Simulation flag: engine rule only (no test-set device yet).
 - **2 Second bay, GOOSE only** (built 2026-11-11, behind ⚙): line A–X on bus A (21-AX, 52-AX), a second switch so messages share some links and not others. New messaging: **breaker failure (50BF)** (52-AB stays closed → 21-AB publishes a BF trip that 52-AX must subscribe to), one publisher with several subscribers, a subscription that is right in one bay and missing in the other, and one switch or VLAN mistake affecting both bays. Still no SV.
 - **3 Sampled Values:** merging unit streams in the line bays: sample counter, quality, `smpSynch`; what the relay blocks when samples stop, freeze or lose time sync. Waveforms synthesized from hand-written phasors (no DC offset, no transients; said so in the UI). Static fixtures from the sibling engine only if more realism is ever wanted.
-- **4 Transformer bay and differentials:** load tap A–T (transformer, single feeder breaker 52-AT, HV and LV merging units); 87T tripping 52-AT; 87B on bus A from all three bays' SV, with 50BF from slice 2 feeding it.
+- **4 Transformer bay and differentials (built 2026-11-11, behind ⚙):** load tap A–T (transformer, single feeder breaker 52-AT, HV and LV merging units); 87T tripping 52-AT; 87B on bus A from all three bays' SV, with 50BF from slice 2 feeding it.
 - **5 Redundancy (PRP built 2026-11-11):** PRP A/B process bus; RSTP vs PRP/HSR, "the network recovered in 50 ms" vs a trip budget; priority under load with SV on the same links.
 - **6 Time sync:** PTP grandmaster loss, holdover, what SV subscribers (especially 87B) do with unsynchronized samples.
 - **Configuration files:** a read-only walk through the SCL chain (specification, ICD/CID, SCD) showing where each subscription value comes from.
@@ -342,7 +353,7 @@ Copy the sibling's structure and habits; adapt the code, don't share it.
 - **Engine:** `lib/schema.js` (config, defaults, `migrateConfig()`), a timeline module (`simulate`), `lessons.js` (data), `colors.js`, a units helper, one test file pinning behaviour and every lesson's figures.
 - **UI pieces to adapt:** `TimingChart`, `SimControls`, `EventLog`, `Lessons`, `SettingsPanel`, `Welcome` (welcome card without the audience question).
 - **Conventions carried over:** ids `<own bus><far end>`; protection times stored in cycles; schema change = version bump + migration + migration test; new features behind `config.features.*`, gated centrally; every state change an event with a snapshot.
-- **Verifying changes:** `npm test`, `npm run build`, screenshots on desktop, phone (390×844) and ultrawide (3440×1440) when layout changes, then update SPEC § Status & backlog and README.
+- **Verifying changes:** `npm test`, `npm run build`, screenshots on desktop and ultrawide (3440×1440) when layout changes, and a check that phone (390×844) still renders readably (review and debugging only, decided 2026-11-12), then update SPEC § Status & backlog and README.
 - **Hosting by stage:**
   - **Development (until feature-complete):** Vite dev server on localhost, previewed from the phone over the private tailnet only (details in `CLAUDE.local.md`); git on Soft Serve. The dev server is never exposed publicly.
   - **Production:** a GitHub Pages workflow (tests, build with a `VITE_BASE`, deploy), as in the sibling; asset paths stay relative to Vite's `base` from the start so this needs no rework.
