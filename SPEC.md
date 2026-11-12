@@ -1,9 +1,9 @@
 # Digital Substation Simulator: Specification
 
-**Status:** design draft (2026-11-11, revised after first review). No code yet.
+**Status:** in development (slices 1–6 built behind feature toggles; see Status & backlog). Sections 3–6 describe slice 1 as designed; later slices are recorded in Status & backlog and § 9.
 **Purpose:** A browser-based training simulator for the digital substation. It shows how protection signals travel when trip wires become **GOOSE** messages and CT/VT wiring becomes **Sampled Values (SV)** streams, and what breaks when the network or its configuration is wrong. It runs entirely in the browser.
 
-## Status & backlog (as of 2026-11-11)
+## Status & backlog (as of 2026-11-12)
 
 **Decided**
 - Name and repository: `digital-substation-sim`. MIT licence. Public read-only from the first push (anonymous read on Soft Serve, as with the sibling). Private setup lives in a git-ignored `CLAUDE.local.md`.
@@ -24,7 +24,7 @@
 - Lessons (§ 6): all three; 29 Vitest tests pin the behaviour and every quoted figure.
 - Verified by screenshot on desktop, phone (390×844) and ultrawide.
 
-**Built 2026-11-11 (later the same day; not yet committed)**
+**Built 2026-11-11 (later the same day)**
 - **Tour and "?" links** (§ 11.3): *Reading the screen*, seven spotlight steps (bay, timing, frames, decoded frame, outcome, events, header) driving the playback as it goes; started from the welcome pane, the Lessons menu and the end of Foundations. A "?" beside each panel title and each decoded-frame section opens its Foundations chapter.
 - **Slice 1.1, test mode** (⚙ Test mode, off by default): each IED's mode (on / test / test/blocked) in the bay's failure panel; test-flagged data treated as invalid by normal-mode subscribers (new frame fate "test: not used"), used by test-mode ones; test/blocked processes but blocks the trip output. Simulation flag rule (only LPHD.Sim IEDs use simulated messages) in the engine; no test-set device yet. Lesson *The relay was left in test*.
 - **Slice 2, second bay** (⚙ Second bay and breaker failure, off by default): line A–X (21-AX, SW2, 52-AX) on bus A, trunk L5 between the switches, breaker failure in both line relays (BF trip after 8 cycles, illustrative, if the own breaker is still closed) published as GOOSE to the other bay's breaker IED; new failures: stuck breaker, switch failure; a *Breaker failure* view (−10 to 250 ms). Track *Two bays*: *Breaker failure: the neighbours clear it*, *A lost trip, saved by breaker failure*, *One switch, two bays*, *Right in one bay, missing in the other* (a never-configured subscription: no alarm, because there is nothing to supervise; new failure `subMissing`, new verdict "Fault NOT cleared at bus A").
@@ -37,7 +37,7 @@
 4. ~~Missing-subscription lesson~~: built (2026-11-11).
 7. **Topology: decided and built 2026-11-11.** Station bus SB (VLAN 20: relays' station ports, gateway / HMI) and a station-wide process bus PB (VLAN 10: relays' process ports, breaker IEDs, later merging units), drawn as bus bars from control house to yard. Used everywhere, from the first lesson (schema v3; v2 migrates). Relays have two ports and publish GOOSE only on the process port; the gateway's MMS is not simulated yet, so a station-bus failure leaves protection untouched (a lesson try-this). Single networks for now; **redundancy (PRP, A/B networks) is the next slice**. Slice-1 lesson figures are unchanged (relay → breaker is still one switch hop).
 5. Phone: SVG text in the denser figures (A1, E3) is small at 390 px.
-6. What next: slice 3 (Sampled Values), a review pass of Foundations C–E with fixes, or the GitHub Pages workflow?
+6. ~~What next~~: answered (redundancy, then SV, then slices 4 and 6).
 
 **Built 2026-11-11: redundancy (PRP), slice 5 brought forward** (⚙ Redundant process bus (PRP), off by default; schema v4). The process bus becomes LAN A (PBA) and LAN B (PBB); every relay and breaker IED is a doubly attached node sending each frame on both with a 6-byte RCT trailer (sequence number, suffix 0x88FB); the receiver uses the first copy and discards the duplicate (shown per frame as "PRP copies"). PRP supervision: a node alarms when one LAN has been silent for the life-check interval (2000 ms, illustrative), and protection carries on over the other. The test set is single-attached (LAN A). Station view: two thin LAN bars, parallel A/B links, PRP A/B status per device; timing chart: a PRP lane per device; decoded frame: PRP copies and trailer. Lesson *Two networks: nothing lost* (track *Redundancy*). 109 tests.
 
@@ -59,7 +59,7 @@
 
 **For the user's review (slice 4)**
 14. Zones and behaviour are scripted, not computed: a bus fault is seen only by 87B, a transformer fault only by 87T, a line fault only by the line relay; every bay's waveforms show the same illustrative fault current. Breaker failure on a line trips 52-AT too (bus A cleared). 86 lockouts for 87B / 87T are not modelled (Foundations C4 covers them).
-15. Next candidates: the time-sync slice (grandmaster, holdover, sync alarms feeding 87B), MMS on the station bus, or a review / polish pass across lessons.
+15. ~~Next candidates~~: time sync built (slice 6); MMS on the station bus and station-bus PRP next (decided 2026-11-12).
 
 **Built 2026-11-12: slice 6, time sync** (⚙ Time sync (PTP grandmasters), off by default; brings Sampled Values; schema v8 with `ptp: { failoverS: 3, muHoldoverS: 2, gmHoldoverS: 100 }`, all illustrative). Two GPS grandmasters, GM1 and backup GM2, on the process bus (`lib/ptp.js`): states locked (class 6) → holdover (7) → degraded past spec (52) → failed; best master clock picks the best live clock at once, but after a grandmaster *fails* the backup only takes over after `failoverS`. Each merging unit follows the grandmaster over the network (path checked with `forward()`, so PRP and RSTP apply): smpSynch 2 while the grandmaster is traceable to GPS, 1 on local time, and after losing the grandmaster it holds its value for `muHoldoverS`, then 0. smpSynch feeds stream health, so 87B / 87T react (one-MU relays don't). Sync changes are logged once per merging unit, naming who blocks and who carries on. Station view: grandmaster boxes (state, class, which is grandmaster) with GPS and failure presets; timing chart: a Grandmaster lane. New verdict "Cleared, but late". Lessons (track *Time sync*): *No GPS, still one clock* (both grandmasters past holdover: smpSynch 1 everywhere, 87B still trips at 16.7 ms) and *The grandmaster fails: a gap with no differential* (GM1 fails 2.5 s before: smpSynch 0 at −500 ms, GM2 at +500 ms, 87B trips at 516.7 ms / 31.0 cyc, bus clear at 552.0 ms). 144 tests.
 
@@ -341,9 +341,9 @@ None open for slice 1. Settled in review (2026-11-11): load tap = transformer be
 
 - **1.1 Test mode** (built 2026-11-11): Mod/Beh, test flags, lesson *The relay was left in test*. Simulation flag: engine rule only (no test-set device yet).
 - **2 Second bay, GOOSE only** (built 2026-11-11, behind ⚙): line A–X on bus A (21-AX, 52-AX), a second switch so messages share some links and not others. New messaging: **breaker failure (50BF)** (52-AB stays closed → 21-AB publishes a BF trip that 52-AX must subscribe to), one publisher with several subscribers, a subscription that is right in one bay and missing in the other, and one switch or VLAN mistake affecting both bays. Still no SV.
-- **3 Sampled Values:** merging unit streams in the line bays: sample counter, quality, `smpSynch`; what the relay blocks when samples stop, freeze or lose time sync. Waveforms synthesized from hand-written phasors (no DC offset, no transients; said so in the UI). Static fixtures from the sibling engine only if more realism is ever wanted.
+- **3 Sampled Values (built 2026-11-11, behind ⚙):** merging unit streams in the line bays: sample counter, quality, `smpSynch`; what the relay blocks when samples stop, freeze or lose time sync. Waveforms synthesized from hand-written phasors (no DC offset, no transients; said so in the UI). Static fixtures from the sibling engine only if more realism is ever wanted.
 - **4 Transformer bay and differentials (built 2026-11-11, behind ⚙):** load tap A–T (transformer, single feeder breaker 52-AT, HV and LV merging units); 87T tripping 52-AT; 87B on bus A from all three bays' SV, with 50BF from slice 2 feeding it.
-- **5 Redundancy (PRP built 2026-11-11):** PRP A/B process bus; RSTP vs PRP/HSR, "the network recovered in 50 ms" vs a trip budget; priority under load with SV on the same links.
+- **5 Redundancy (PRP and RSTP built 2026-11-11):** PRP A/B process bus; RSTP vs PRP (HSR still open), "the network recovered in 50 ms" vs a trip budget; priority under load with SV on the same links.
 - **6 Time sync (built 2026-11-12, behind ⚙):** PTP grandmaster loss, holdover, what SV subscribers (especially 87B) do with unsynchronized samples.
 - **Configuration files:** a read-only walk through the SCL chain (specification, ICD/CID, SCD) showing where each subscription value comes from.
 - Raw hex / BER view, if the network audience asks for it.
