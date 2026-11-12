@@ -6,7 +6,7 @@
 // Units: protection-relevant times in cycles (as the Line Protection
 // Simulator); communication times in ms; network in Mbit/s and µs.
 
-export const SCHEMA_VERSION = 4
+export const SCHEMA_VERSION = 6
 
 // Retransmission profiles. IEC 61850-8-1 leaves the curve to the
 // implementation; these are illustrative. Each frame's timeAllowedtoLive is
@@ -38,14 +38,17 @@ export function defaultConfig() {
       auxMoveMs: 15,        // trip coil → Pos leaves "on" (mechanism moving)
       auxSettleMs: 5,       // contacts parted → Pos reads "off"
       bfCycles: 8,          // breaker failure: trip → BF trip if current still flows (illustrative)
+      svLossMs: 1,          // relay declares an SV stream lost after this long without new samples (illustrative)
     },
     // The scripted fault: which line it is on (that line's relay trips)
     script: { faultLine: 'AB' },
     // Communication stack time in each IED (logic ⇄ wire). Illustrative:
     // roughly the 40 % / 20 % / 40 % split of a 3 ms budget.
     stack: { publishMs: 1.0, subscribeMs: 1.0 },
-    // prpLifeCheckMs: a PRP node alarms when one LAN has been silent this long (illustrative)
-    network: { linkMbps: 100, switchLatencyUs: 5, prpLifeCheckMs: 2000 },
+    // redundancy: which scheme the redundancy feature uses ('prp' | 'rstp').
+    // prpLifeCheckMs: a PRP node alarms when one LAN has been silent this long (illustrative).
+    // rstpRecoveryMs: how long RSTP takes to unblock the standby ring link (illustrative).
+    network: { linkMbps: 100, switchLatencyUs: 5, redundancy: 'prp', prpLifeCheckMs: 2000, rstpRecoveryMs: 50 },
     goose: { profile: 'typical' },
 
     ieds: [
@@ -97,12 +100,16 @@ export function defaultConfig() {
       { id: '21-AB.Pos', ied: '21-AB', gocb: 'AB.Pos', use: 'breakerPos',
         expect: { mac: '01-0C-CD-01-00-02', appid: 0x0102, gocbRef: 'BkrCtlABCTRL/LLN0$GO$Pos', datSet: 'BkrCtlABCTRL/LLN0$DS_Pos', confRev: 1 } },
     ],
-    features: { networkDetail: false, testMode: false, secondBay: false, redundancy: false },
+    features: { networkDetail: false, testMode: false, secondBay: false, redundancy: false, sampledValues: false },
   }
 }
 
 // One step per schema version.
 const MIGRATIONS = {
+  // v5 → v6: Sampled Values feature, SV loss detection time
+  5: cfg => ({ ...cfg, version: 6, timing: { svLossMs: 1, ...cfg.timing }, features: { sampledValues: false, ...cfg.features } }),
+  // v4 → v5: redundancy scheme (PRP or RSTP), RSTP recovery time
+  4: cfg => ({ ...cfg, version: 5, network: { redundancy: 'prp', rstpRecoveryMs: 50, ...cfg.network } }),
   // v3 → v4: redundancy feature (PRP process bus), PRP life-check interval
   3: cfg => ({
     ...cfg,

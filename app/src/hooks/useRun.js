@@ -7,12 +7,12 @@ import { isActive } from '../lib/features'
 // milliseconds, the heartbeat is seconds.
 export const ZOOMS = {
   trip: { id: 'trip', label: 'Around the trip', t0: -0.005, t1: 0.085, speeds: [0.002, 0.005, 0.02], speed: 0.005 },
-  bf: { id: 'bf', label: 'Breaker failure', t0: -0.01, t1: 0.25, speeds: [0.005, 0.01, 0.05], speed: 0.01, feature: 'secondBay' },
+  bf: { id: 'bf', label: 'Up to 250 ms', t0: -0.01, t1: 0.25, speeds: [0.005, 0.01, 0.05], speed: 0.01, feature: ['secondBay', 'redundancy'] },
   heartbeats: { id: 'heartbeats', label: 'Heartbeats', t0: -3.0, t1: 2.5, speeds: [0.1, 0.25, 1], speed: 0.25 },
 }
 
 // The views this config offers (the breaker-failure view needs the second bay)
-export const zoomsFor = config => Object.values(ZOOMS).filter(z => !z.feature || isActive(config, z.feature))
+export const zoomsFor = config => Object.values(ZOOMS).filter(z => !z.feature || [z.feature].flat().some(f => isActive(config, f)))
 
 // config: the station config (stationConfig(config)), which the engine runs
 export function useRun(config) {

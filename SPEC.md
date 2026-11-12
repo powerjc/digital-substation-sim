@@ -46,7 +46,14 @@
 9. PRP supervision is approximated from any traffic on each LAN (real PRP nodes also send their own supervision frames, every 2 s by default); duplicate discard is by the first arrival. Confirm the life-check figure and wording (§ 7).
 10. **Next (decided 2026-11-11): an *RSTP vs PRP* lesson, then Sampled Values (slice 3).** HSR stays in the backlog.
 
-**Next:** RSTP vs PRP lesson, then slice 3 (Sampled Values in the line bays).
+**Built 2026-11-11: RSTP vs PRP.** ⚙ Redundant process bus now offers PRP or RSTP (schema v5: `network.redundancy`, `network.rstpRecoveryMs` 50, illustrative). RSTP: the process bus as two ring switches (PB1 for relays and the test set, PB2 for breaker IEDs) joined by R1 (forwarding) and R2 (blocked until R1 fails and the recovery time has passed); frames crossing the ring during recovery are lost. Status line under the bay view. Lesson *RSTP: “the network recovered in 50 ms”*: R1 fails at the fault, the trip gets through on the repeat at 79.7 ms (transfer 64.0 ms), 52-AB opens at 114.0 ms (6.8 cyc), 3.7 cycles slower; with PRP nothing is lost. 114 tests.
+
+**Built 2026-11-11: slice 3, Sampled Values** (⚙ Sampled Values (merging units), off by default; schema v6). A merging unit per line bay (MU-AB, MU-AX) on the process bus (also split by PRP, on PB2 in an RSTP ring) publishing SV (80 samples per cycle, 4800/s, APPID 0x4001…, MAC 01-0C-CD-04-…); the line relay subscribes instead of CT/VT wiring. Engine: no per-sample events; it computes when each relay's stream is good (network path via the same `forward()`, plus merging-unit problems: stop, frozen counter, invalid quality, time sync lost) and the relay (a) declares the stream lost 1 ms after samples stop or freeze (illustrative), invalid at once, and blocks; (b) trips only after a cycle of valid samples after the fault or after samples return. New verdict "Relay did NOT trip". Sampled Values panel: waveforms synthesized from phasors (no DC offset or transients, stated), gaps and frozen samples visible, the sample at the cursor decoded (smpCnt, smpSynch, quality, 8 values) and the SV frame fields. Lessons *The CT wiring is a stream*, *No samples, no protection* (with an RSTP try-this: trip at 66.7 ms, one cycle after samples return). 124 tests.
+
+**For the user's review (SV)**
+11. Relay behaviour is a teaching model: 1 ms loss detection, "a cycle of valid samples" before tripping, block on lost / frozen / invalid, carry on when only sync is lost (single merging unit). Confirm or give typical figures.
+12. Phone layout with SV: both buses become vertical bars down the sides with the devices stacked between them (long on two bays).
+13. Next candidates: slice 4 (transformer bay A–T with HV/LV merging units, 87T, and 87B from all bays' SV, which is where sync loss starts to block), the time-sync simulator slice (6), or MMS on the station bus.
 
 **Backlog:** see § 9.
 
@@ -300,6 +307,7 @@ Each entry gets a source and a test. Until confirmed, the UI labels it "illustra
 | PTP (Foundations E3–E5): power utility profile target ±1 µs; clock class 6 / 7 / 248; BMCA order priority1 → clock class → … → priority2; Layer 2 multicast transport | as stated | IEC 61850-9-3, IEEE C37.238, IEEE 1588-2019 |
 | `smpSynch` values 0 / 1 / 2 (Foundations E4) and how protection reacts (typical; vendors differ) | as stated | IEC 61850-9-2 Ed. 2.1 / IEC 61869-9; vendor manuals |
 | Oscillator stabilities for holdover (Foundations E5) | 1 ppm, 0.01 ppm, 0.0001 ppm (illustrative, constant-error model) | Vendor-neutral references |
+| SV details as modelled (slice 3): smpCnt restarting each second on synchronized merging units, MAC 01-0C-CD-04-xx-xx, APPID 0x4000–0x7FFF, 8-value dataset; relay loss detection 1 ms and one cycle of valid samples before tripping (illustrative) | as stated | IEC 61850-9-2 / 9-2LE, IEC 61869-9; vendor manuals |
 | Sampled Values rate (Foundations B1) | 80 samples per cycle, 4800/s at 60 Hz | IEC 61869-9 / UCA 9-2LE |
 | Logical-node classes and the device-number mapping (Foundations B2) | as `LN_TABLE` in `figures.js` | IEC 61850-7-4; IEEE C37.2 for device numbers |
 | Breaker opening time | 2 cycles, illustrative | Typical published breaker ratings |

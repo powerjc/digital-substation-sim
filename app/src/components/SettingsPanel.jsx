@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { FEATURES, isActive } from '../lib/features'
 import { PROFILES, TRIP_CLASS } from '../lib/schema'
 
-export default function SettingsPanel({ config, onFeature, onReset }) {
+export default function SettingsPanel({ config, onFeature, onReset, onNetwork }) {
   const [open, setOpen] = useState(false)
   const prof = PROFILES[config.goose.profile]
   return (
@@ -16,10 +16,21 @@ export default function SettingsPanel({ config, onFeature, onReset }) {
           <div>
             <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Features</div>
             {FEATURES.map(f => (
-              <label key={f.id} className="flex items-start gap-2 cursor-pointer">
-                <input type="checkbox" className="mt-1" checked={isActive(config, f.id)} onChange={e => onFeature(f.id, e.target.checked)} />
-                <span><span className="font-semibold text-gray-800">{f.label}</span><br /><span className="text-xs text-gray-500">{f.help}</span></span>
-              </label>
+              <div key={f.id} className="mb-2">
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input type="checkbox" className="mt-1" checked={isActive(config, f.id)} onChange={e => onFeature(f.id, e.target.checked)} />
+                  <span><span className="font-semibold text-gray-800">{f.label}</span><br /><span className="text-xs text-gray-500">{f.help}</span></span>
+                </label>
+                {f.id === 'redundancy' && isActive(config, 'redundancy') && onNetwork && (
+                  <div className="flex gap-3 mt-1 ml-6" role="radiogroup" aria-label="Redundancy scheme">
+                    {[['prp', 'PRP (two networks)'], ['rstp', 'RSTP (ring)']].map(([v, l]) => (
+                      <label key={v} className="flex items-center gap-1 text-xs text-gray-700">
+                        <input type="radio" name="redundancy" checked={(config.network.redundancy ?? 'prp') === v} onChange={() => onNetwork({ redundancy: v })} />{l}
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
             ))}
           </div>
           <div>

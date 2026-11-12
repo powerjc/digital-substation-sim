@@ -12,8 +12,9 @@
 //   subMissing: [subId]                   a subscription never configured at all
 //   testSet:    { imitate: gocbId, tripAt } test set publishing simulated copies (feature testMode)
 //   simMode:    [iedId]                   IEDs in simulation mode (LPHD.Sim)
+//   svFault:    { [svId]: { kind, at } }  merging-unit problem: stop | freeze | invalid | sync
 
-export const EMPTY_SCENARIO = { linkDown: {}, drops: [], subWrong: {}, vlanMissing: [], iedMode: {}, breakerStuck: [], switchDown: {}, subMissing: [], testSet: null, simMode: [] }
+export const EMPTY_SCENARIO = { linkDown: {}, drops: [], subWrong: {}, vlanMissing: [], iedMode: {}, breakerStuck: [], switchDown: {}, subMissing: [], testSet: null, simMode: [], svFault: {} }
 
 export const normalizeScenario = sc => ({ ...EMPTY_SCENARIO, ...(sc ?? {}) })
 
@@ -43,7 +44,7 @@ export function countFailures(sc) {
   const s = normalizeScenario(sc)
   return Object.keys(s.linkDown).length + s.drops.length + Object.keys(s.subWrong).length + s.vlanMissing.length +
     Object.keys(s.iedMode).length + s.breakerStuck.length + Object.keys(s.switchDown).length + s.subMissing.length +
-    (s.testSet ? 1 : 0) + s.simMode.length
+    (s.testSet ? 1 : 0) + s.simMode.length + Object.keys(s.svFault).length
 }
 
 // Apply engineering errors (subscriptions, VLAN membership) to a copy of the

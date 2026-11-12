@@ -21,6 +21,10 @@ const KIND_STYLE = {
   blocked: 'text-purple-700 font-semibold',
   stuck: 'text-red-700 font-bold',
   bf: 'text-orange-700 font-bold',
+  rstp: 'text-amber-700 font-semibold',
+  prpLan: 'text-orange-700 font-bold',
+  testset: 'text-purple-700 font-semibold',
+  simLock: 'text-purple-700 font-semibold',
 }
 
 export default function EventLog({ events, eventIdx, onSelect, window: win }) {

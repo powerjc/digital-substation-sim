@@ -12,6 +12,7 @@ import FrameList from './components/FrameList'
 import FrameDetail from './components/FrameDetail'
 import EventLog from './components/EventLog'
 import SettingsPanel from './components/SettingsPanel'
+import SVPanel from './components/SVPanel'
 import { LessonMenu, LessonCard, loadSeen, saveSeen } from './components/Lessons'
 import { WelcomeCard, loadWelcomed, saveWelcomed } from './components/Welcome'
 import FoundationsView, { loadRead, saveRead } from './components/foundations/FoundationsView'
@@ -162,7 +163,7 @@ export default function App() {
         </nav>
         <div className="flex items-center gap-2 shrink-0">
           <LessonMenu activeId={lessonId} seen={seen} onStart={startLesson} onWelcome={() => { setLessonId(null); setTab('sim'); setWelcome(true) }} onTour={startTour} />
-          <SettingsPanel config={config} onFeature={setFeature} onReset={reset} />
+          <SettingsPanel config={config} onFeature={setFeature} onReset={reset} onNetwork={n => setConfig(c => ({ ...c, network: { ...c.network, ...n } }))} />
         </div>
       </header>
 
@@ -189,6 +190,13 @@ export default function App() {
           <TimingChart config={station} run={run} selectedFrame={selectedFrame} onSelectFrame={setSelectedFrame}
             controls={<SimControls run={run} freqHz={config.freqHz} />} />
         </Card>
+
+        {station.svSubs?.length > 0 && (
+          <Card id="sv" flash={flash} spot={spot} className="p-4 min-w-0">
+            <h3 className="text-sm font-semibold text-gray-700 mb-2">Sampled Values<HelpLink chapter="B1" /></h3>
+            <SVPanel config={run.sim.config} run={run} />
+          </Card>
+        )}
 
         <div className="grid lg:grid-cols-[minmax(0,1fr)_26rem] 2xl:grid-cols-[minmax(0,1fr)_26rem_26rem] gap-4 items-start">
           <Card id="frames" flash={flash} spot={spot} className="min-w-0">

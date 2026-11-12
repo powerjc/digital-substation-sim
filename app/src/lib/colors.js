@@ -6,6 +6,8 @@ export const DEVICE_COLOR = {
   SB: '#64748b',
   GW: '#7c3aed',
   TS: '#a855f7',      // purple: the test set
+  'MU-AB': '#0891b2',  // cyan: merging units
+  'MU-AX': '#0e7490',
   PBA: '#0369a1',     // LAN A
   PBB: '#b45309',     // LAN B
   '21-AX': '#ca8a04', // yellow (as in the Line Protection Simulator)
@@ -34,5 +36,8 @@ export const SUB_STATUS = {
   stale:    { label: 'LOST',      color: '#dc2626', bg: 'bg-red-100 text-red-800 border-red-300' },
   noMsg:    { label: 'NO MSG',    color: '#dc2626', bg: 'bg-red-100 text-red-800 border-red-300' },
   mismatch: { label: 'CONFIG',    color: '#ea580c', bg: 'bg-orange-100 text-orange-800 border-orange-300' },
+  lost:     { label: 'LOST',      color: '#dc2626', bg: 'bg-red-100 text-red-800 border-red-300' },
+  frozen:   { label: 'FROZEN',    color: '#dc2626', bg: 'bg-red-100 text-red-800 border-red-300' },
+  invalid:  { label: 'INVALID',   color: '#dc2626', bg: 'bg-red-100 text-red-800 border-red-300' },
   none:     { label: 'NONE',      color: '#9ca3af', bg: 'bg-gray-100 text-gray-600 border-gray-300' },
 }

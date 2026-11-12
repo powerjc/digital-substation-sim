@@ -11,6 +11,7 @@ import { stationConfig } from './station'
 import { TOUR } from './tour'
 import { chapterById } from './foundations'
 import { simulationDecision } from './goose'
+import { svRate, smpCntAt, instantValues, sampleAt, PHASORS } from './sv'
 
 const run = (sc = {}, cfg = defaultConfig()) => simulate(cfg, sc)
 const ev = (r, kind, dev) => r.events.find(e => e.kind === kind && (!dev || e.dev === dev))
@@ -18,14 +19,14 @@ const ms = s => Math.round(s * 1e5) / 100 // s → ms, 2 decimals
 const tripFrames = r => r.frames.filter(f => f.gocb === 'AB.Trip')
 
 describe('schema', () => {
-  it('is at v4 and migrates a current config unchanged', () => {
+  it('is at v6 and migrates a current config unchanged', () => {
     const c = defaultConfig()
     expect(c.version).toBe(SCHEMA_VERSION)
-    expect(SCHEMA_VERSION).toBe(4)
+    expect(SCHEMA_VERSION).toBe(6)
     expect(migrateConfig(c)).toEqual(c)
     expect(migrateConfig(null)).toEqual(defaultConfig())
   })
-  it('migrates a v1 config to v4: features, script, BF timer, station / process bus, PRP', () => {
+  it('migrates a v1 config to v6: features, script, BF timer, station / process bus, PRP, RSTP, SV', () => {
     const v1 = defaultConfig()
     v1.version = 1
     delete v1.script
@@ -35,10 +36,13 @@ describe('schema', () => {
     v1.switches = [{ id: 'SW1', label: 'Bay switch', ports: { 1: { vlans: [10] }, 2: { vlans: [10] } } }]
     v1.links = [{ id: 'L1', a: '21-AB', b: 'SW1:1' }, { id: 'L2', a: 'SW1:2', b: '52-AB' }]
     const m = migrateConfig(v1)
-    expect(m.version).toBe(4)
+    expect(m.version).toBe(6)
+    expect(m.timing.svLossMs).toBe(1)
+    expect(m.network.redundancy).toBe('prp')
+    expect(m.network.rstpRecoveryMs).toBe(50)
     expect(m.switches.map(x => x.id)).toEqual(['PB', 'SB'])
     expect(m.network.prpLifeCheckMs).toBe(2000)
-    expect(m.features).toEqual({ networkDetail: true, testMode: false, secondBay: false, redundancy: false })
+    expect(m.features).toEqual({ networkDetail: true, testMode: false, secondBay: false, redundancy: false, sampledValues: false })
     expect(m.script).toEqual({ faultLine: 'AB' })
     expect(m.timing.bfCycles).toBe(8)
     expect(m.ieds.find(d => d.id === '21-AB').line).toBe('AB')
@@ -455,5 +459,99 @@ describe('redundancy: PRP process bus', () => {
   })
   it('the feature off leaves the station unchanged', () => {
     expect(withFeatures('secondBay').switches.map(x => x.id)).toEqual(['PB', 'SB'])
+  })
+})
+
+describe('redundancy: RSTP ring', () => {
+  const rstp = (() => { const c = defaultConfig(); c.features.redundancy = true; c.network.redundancy = 'rstp'; return stationConfig(c) })()
+  it('two ring switches, R1 forwarding and R2 blocked; relays on PB1, breaker IEDs on PB2', () => {
+    expect(rstp.switches.map(x => x.id).sort()).toEqual(['PB1', 'PB2', 'SB'])
+    expect(rstp.links.find(l => l.id === 'R2')).toMatchObject({ rstp: 'standby', backs: 'R1' })
+    expect(rstp.links.find(l => l.a === '21-AB:P').b).toBe('PB1:1')
+    const r = simulate(rstp, {})
+    expect(tripFrames(r).every(f => !f.hops.some(h => h.link === 'R2'))).toBe(true)
+    expect(fmtDur(r.outcome.transferT)).toBe('2.05 ms')
+  })
+  it('R1 fails at the fault: 50 ms of lost frames, sqNum 5 at 79.7 ms delivers, transfer 64.0 ms, open 114.0 ms (6.8 cyc), 3.7 cyc slower', () => {
+    const r = simulate(rstp, { linkDown: { R1: 0 } })
+    expect(r.outcome.verdict).toBe('late')
+    expect(r.outcome.deliveredBy.sq).toBe(5)
+    expect(fmtTime(tripFrames(r).find(f => f.pdu.stNum === 2 && f.pdu.sqNum === 5).sendT)).toBe('79.7 ms')
+    expect(fmtDur(r.outcome.transferT)).toBe('64.0 ms')
+    expect(fmtProt(r.outcome.openT, 60)).toBe('114.0 ms (6.8 cyc)')
+    expect(((r.outcome.openT - 0.052) * 60).toFixed(1)).toBe('3.7')
+    expect(r.events.filter(e => e.kind === 'rstp').map(e => Math.round(e.t * 1000))).toEqual([0, 50])
+  })
+  it('R1 failing 2 s before is harmless; PB1 itself failing loses the trip', () => {
+    expect(fmtProt(simulate(rstp, { linkDown: { R1: -2 } }).outcome.openT, 60)).toBe('52.0 ms (3.1 cyc)')
+    expect(simulate(rstp, { switchDown: { PB1: 0 } }).outcome.verdict).toBe('notDelivered')
+  })
+  it('PRP with LAN A failing at the fault: nothing lost, 2.03 ms', () => {
+    const prp = withFeatures('redundancy')
+    expect(fmtDur(simulate(prp, { switchDown: { PBA: 0 } }).outcome.transferT)).toBe('2.03 ms')
+  })
+})
+
+describe('Sampled Values', () => {
+  const sv = withFeatures('sampledValues')
+  it('a merging unit per line bay on the process bus; the relay subscribes', () => {
+    expect(sv.ieds.find(d => d.id === 'MU-AB').kind).toBe('mu')
+    expect(sv.links.find(l => l.a === 'MU-AB').b).toBe('PB:5')
+    expect(sv.svSubs).toEqual([{ id: '21-AB.SV', ied: '21-AB', sv: 'AB.SV', use: 'measure' }])
+    expect(sv.svcbs[0].appid).toBeGreaterThanOrEqual(0x4000)
+    expect(withFeatures('sampledValues', 'secondBay').svSubs.map(s => s.ied)).toEqual(['21-AB', '21-AX'])
+    expect(withFeatures('sampledValues', 'redundancy').links.filter(l => l.a.startsWith('MU-AB')).map(l => l.b)).toEqual(['PBA:5', 'PBB:5'])
+  })
+  it('4800 samples a second at 60 Hz; smpCnt 0 at the fault, 80 one cycle later, restarting each second', () => {
+    expect(svRate(60)).toBe(4800)
+    expect(smpCntAt(0)).toBe(0)
+    expect(smpCntAt(1 / 60)).toBe(80)
+    expect(smpCntAt(1.0)).toBe(0)
+    expect(smpCntAt(0.9999)).toBe(4799)
+  })
+  it('synthesized values: balanced (IN = 0), load 400 A and fault 8 kA peaks, nothing after clearing', () => {
+    const peak = (st, ctx) => Math.max(...Array.from({ length: 80 }, (_, k) => Math.abs(instantValues(st + k / 4800, ctx).IA)))
+    expect(Math.abs(instantValues(-0.01, {}).IN)).toBeLessThan(1e-6)
+    expect(peak(-0.05, {})).toBeCloseTo(PHASORS.prefault.I * Math.SQRT2, -1)
+    expect(peak(0.01, {})).toBeCloseTo(PHASORS.fault.I * Math.SQRT2, -2)
+    expect(peak(0.2, { clearT: 0.052 })).toBe(0)
+    const fz = sampleAt(0.03, { arriving: true, frozenAt: 0.005, invalid: false, synch: 2 }, {})
+    expect(fz.frozen).toBe(true)
+    expect(fz.smpCnt).toBe(smpCntAt(0.005))
+  })
+  it('normal: the relay trips at 16.7 ms on the samples, breaker open 52.0 ms; feature off changes nothing', () => {
+    const r = simulate(sv, {})
+    expect(fmtProt(r.outcome.tripT, 60)).toBe('16.7 ms (1.0 cyc)')
+    expect(fmtProt(r.outcome.openT, 60)).toBe('52.0 ms (3.1 cyc)')
+    expect(stationConfig(defaultConfig()).svSubs).toBeUndefined()
+  })
+  it('stream stops, freezes or goes invalid 5 ms after the fault: SV alarm at 6.00 ms (or at once), no trip', () => {
+    for (const kind of ['stop', 'freeze', 'invalid']) {
+      const r = simulate(sv, { svFault: { 'AB.SV': { kind, at: 0.005 } } })
+      expect(r.outcome.verdict, kind).toBe('noTrip')
+      const lost = r.events.find(e => e.kind === 'svLost')
+      expect(fmtTime(lost.t), kind).toBe(kind === 'invalid' ? '5.00 ms' : '6.00 ms')
+      expect(r.outcome.notes.some(n => /No alarm warned/.test(n.text))).toBe(false)
+    }
+  })
+  it('MU link down 2 s before: standing SV alarm before the fault, no trip', () => {
+    const r = simulate(sv, { linkDown: { M1: -2.0 } })
+    expect(r.outcome.verdict).toBe('noTrip')
+    expect(r.events.find(e => e.kind === 'svLost').t).toBeLessThan(0)
+  })
+  it('time sync lost: alarm, but the one-merging-unit relay still trips at 16.7 ms', () => {
+    const r = simulate(sv, { svFault: { 'AB.SV': { kind: 'sync', at: -1.0 } } })
+    expect(r.outcome.verdict).toBe('delivered')
+    expect(fmtProt(r.outcome.tripT, 60)).toBe('16.7 ms (1.0 cyc)')
+    expect(r.events.some(e => e.kind === 'svSync')).toBe(true)
+    expect(r.events.at(-1).state.sv['21-AB.SV'].synch).toBe(0)
+  })
+  it('RSTP ring link fails at the fault: no samples for 50 ms, trip at 66.7 ms (4.0 cyc), open 102.0 ms; PRP loses nothing', () => {
+    const c = defaultConfig(); c.features.sampledValues = true; c.features.redundancy = true; c.network.redundancy = 'rstp'
+    const r = simulate(stationConfig(c), { linkDown: { R1: 0 } })
+    expect(fmtProt(r.outcome.tripT, 60)).toBe('66.7 ms (4.0 cyc)')
+    expect(fmtProt(r.outcome.openT, 60)).toBe('102.0 ms (6.1 cyc)')
+    const p = simulate(withFeatures('sampledValues', 'redundancy'), { switchDown: { PBA: 0 } })
+    expect(fmtProt(p.outcome.tripT, 60)).toBe('16.7 ms (1.0 cyc)')
   })
 })

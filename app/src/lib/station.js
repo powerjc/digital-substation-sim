@@ -48,6 +48,35 @@ function applyPRP(c) {
   return c
 }
 
+// RSTP: the process bus as two switches in a ring, PB1 (relays, test set) and
+// PB2 (breaker IEDs), joined by R1 (forwarding) and R2 (blocked by spanning
+// tree until R1 fails and the recovery time has passed).
+function applyRSTP(c) {
+  const pb = c.switches.find(s => s.id === 'PB')
+  c.switches = c.switches.filter(s => s.id !== 'PB')
+  const kindOf = id => c.ieds.find(d => d.id === id)?.kind
+  const sideOf = end => (['breaker', 'mu'].includes(kindOf(end.split(':')[0])) ? 'PB2' : 'PB1')
+  const ports = { PB1: { 7: { vlans: [10] }, 8: { vlans: [10] } }, PB2: { 7: { vlans: [10] }, 8: { vlans: [10] } } }
+  c.links = c.links.map(l => {
+    const pbEnd = [l.a, l.b].find(e => e.startsWith('PB:'))
+    if (!pbEnd) return l
+    const other = pbEnd === l.a ? l.b : l.a
+    const port = pbEnd.split(':')[1]
+    const sw = sideOf(other)
+    ports[sw][port] = structuredClone(pb.ports[port])
+    return { ...l, a: other, b: `${sw}:${port}` }
+  })
+  c.switches.push(
+    { id: 'PB1', label: 'Process bus, ring switch 1', ports: ports.PB1 },
+    { id: 'PB2', label: 'Process bus, ring switch 2', ports: ports.PB2 },
+  )
+  c.links.push(
+    { id: 'R1', a: 'PB1:8', b: 'PB2:8', rstp: 'active' },
+    { id: 'R2', a: 'PB1:7', b: 'PB2:7', rstp: 'standby', backs: 'R1' },
+  )
+  return c
+}
+
 // With test mode on, a test set sits on a spare process-bus port, ready to
 // publish simulated messages (scenario.testSet).
 function addTestSet(c) {
@@ -57,9 +86,36 @@ function addTestSet(c) {
   return c
 }
 
+// Sampled Values: a merging unit in each line bay on the process bus, publishing
+// the bay's CT and VT samples; the line relay subscribes instead of being wired.
+function addMergingUnits(c) {
+  const bays = c.ieds.filter(d => d.kind === 'relay').map(d => ({ relay: d.id, bay: d.bay }))
+  const pb = c.switches.find(s => s.id === 'PB')
+  c.svcbs = []
+  c.svSubs = []
+  bays.forEach(({ relay, bay }, i) => {
+    const n = i + 1, id = `MU-${bay}`, port = 5 + i
+    c.ieds.push({ id, kind: 'mu', bay, name: `MergingUnit${bay}`, label: 'Merging unit', mac: `02-00-00-${bay === 'AB' ? 'AB' : 'AE'}-00-4D`, mode: 'on', lphdSim: false })
+    pb.ports[port] = { vlans: [10] }
+    c.links.push({ id: `M${n}`, a: id, b: `PB:${port}` })
+    const sv = {
+      id: `${bay}.SV`, ied: id, label: 'SV', svID: `MU_${bay}_SV`,
+      msvRef: `MergingUnit${bay}MU/LLN0$MS$SV`, datSet: `MergingUnit${bay}MU/LLN0$PhsMeas1`,
+      mac: `01-0C-CD-04-00-0${n}`, appid: 0x4000 + n, vlan: { id: 10, priority: 4 }, confRev: 1,
+      smpPerCycle: 80, noASDU: 1, length: 123,
+    }
+    c.svcbs.push(sv)
+    c.svSubs.push({ id: `${relay}.SV`, ied: relay, sv: sv.id, use: 'measure' })
+  })
+  return c
+}
+
 export function stationConfig(config) {
-  const base = buildStation(config)
-  return isActive(config, 'redundancy') ? applyPRP(base === config ? structuredClone(config) : base) : base
+  let base = buildStation(config)
+  if (isActive(config, 'sampledValues')) base = addMergingUnits(base === config ? structuredClone(config) : base)
+  if (!isActive(config, 'redundancy')) return base
+  const c = base === config ? structuredClone(config) : base
+  return config.network?.redundancy === 'rstp' ? applyRSTP(c) : applyPRP(c)
 }
 
 function buildStation(config) {

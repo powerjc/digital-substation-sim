@@ -41,6 +41,7 @@ function buildRows(config, simCfg) {
     const subs = config.subscriptions.filter(s => s.ied === d.id)
     const pubs = config.gocbs.filter(x => x.ied === d.id)
     const subRows = subs.map(s => ({ key: `sub-${s.id}`, label: `Sub ${config.gocbs.find(x => x.id === s.gocb).label}`, type: 'status', sub: s.id, group: g }))
+    for (const s of (config.svSubs ?? []).filter(x => x.ied === d.id)) subRows.unshift({ key: `sv-${s.id}`, label: 'Sub SV', type: 'status', sub: s.id, sv: true, group: g })
     const pubRows = pubs.map(x => ({ key: `gocb-${x.id}`, label: `${x.label} GOOSE`, type: 'frames', gocb: x.id, color, group: g }))
     const prpRow = config.switches.some(s => s.lan) && d.kind !== 'testset'
       ? [{ key: `${g}-prp`, label: 'PRP LANs', type: 'prp', ied: g, group: g }] : []
@@ -181,7 +182,7 @@ export default function TimingChart({ config, run, selectedFrame, onSelectFrame,
               )
             }
             if (r.type === 'status') {
-              const segs = segments(events, t0, t1, s => s.subs[r.sub]?.status ?? 'none').filter(s => s.t0 <= now).map(s => ({ ...s, t1: Math.min(s.t1, now) }))
+              const segs = segments(events, t0, t1, s => (r.sv ? s.sv?.[r.sub]?.status ?? 'healthy' : s.subs[r.sub]?.status ?? 'none')).filter(s => s.t0 <= now).map(s => ({ ...s, t1: Math.min(s.t1, now) }))
               return (
                 <g key={r.key}>
                   {label}

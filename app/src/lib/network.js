@@ -73,9 +73,27 @@ export function forward(topo, config, scenario, frame, t0) {
     for (const ied of downstreamIeds(topo, dev, link)) losses.push({ ied, where, kind, link })
   }
 
+  // RSTP: a standby link forwards only once the link it backs has failed and
+  // the recovery time has passed; until then it is blocked (no traffic, no loss).
+  const linkDef = id => config.links.find(l => l.id === id)
+  const rec = (config.network.rstpRecoveryMs ?? 50) / 1000
+  const visited = new Set()
   function from(dev, inLink, t) {
+    if (visited.has(dev)) return // a frame never passes a switch twice
+    visited.add(dev)
     for (const e of topo.adj[dev] ?? []) {
       if (e.link === inLink) continue
+      const ld = linkDef(e.link)
+      if (ld?.rstp === 'standby') {
+        const downAt = scenario.linkDown?.[ld.backs]
+        const backsDown = downAt !== undefined && downAt !== null && t >= downAt - 1e-12
+        if (!backsDown) continue // blocked by spanning tree
+        if (t < downAt + rec) {
+          hops.push({ link: e.link, from: dev, to: e.peer, t0: t, t1: t, fate: 'down' })
+          lose(e.peer, e.link, `RSTP still reconfiguring after ${ld.backs} failed (until ${((downAt + rec) * 1000).toFixed(1)} ms)`, 'rstp')
+          continue
+        }
+      }
       // A publisher sends a control block only on the port it is bound to
       // (with PRP, both halves of that port: P.A and P.B)
       if (dev === frame.pub && frame.port && e.port !== frame.port && !String(e.port).startsWith(`${frame.port}.`)) continue

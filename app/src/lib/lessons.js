@@ -4,7 +4,7 @@
 // { id, track, title, zoom: 'trip' | 'bf' | 'heartbeats', setup?(cfg), scenario,
 //   intro, watch[], tryIt[], takeaway, expect: { verdict } }
 
-export const TRACKS = ['GOOSE basics', 'Test mode', 'Two bays', 'Redundancy']
+export const TRACKS = ['GOOSE basics', 'Test mode', 'Two bays', 'Redundancy', 'Sampled Values']
 
 export const LESSONS = [
   {
@@ -155,7 +155,7 @@ export const LESSONS = [
       'At the fault 21-AB trips, and later sends its BF trip; neither gets past PB. Nothing at bus A clears the fault.',
     ],
     tryIt: [
-      'Switch to the Breaker failure view to watch the trip and the BF trip go nowhere.',
+      'Switch to the “Up to 250 ms” view to watch the trip and the BF trip go nowhere.',
       'Repair PB and fail the station-bus switch SB instead: protection carries on and the breaker opens at 52.0 ms. The station bus carries SCADA’s MMS (not simulated yet), not the trips.',
     ],
     takeaway: 'A shared process bus couples bays that copper kept apart: one failed switch silenced both bays’ protection messages at once. Supervision found it within two seconds; a second, parallel network (PRP, the next slice) is how stations avoid it.',
@@ -200,5 +200,66 @@ export const LESSONS = [
     ],
     takeaway: 'PRP loses nothing when one network fails: there is no recovery time, because the second copy is already on its way. But protection can’t tell that a LAN is gone; only the PRP alarm says the station is no longer redundant, and it must be acted on like any protection alarm.',
     expect: { verdict: 'delivered' },
+  },
+  {
+    id: 'rstp-vs-prp',
+    track: 'Redundancy',
+    title: 'RSTP: “the network recovered in 50 ms”',
+    zoom: 'bf',
+    setup: cfg => { cfg.features.redundancy = true; cfg.network.redundancy = 'rstp' },
+    scenario: { linkDown: { R1: 0 } },
+    intro: 'Another way to survive a failure: a ring. The process bus is two switches joined by two links, and spanning tree (RSTP) keeps R2 blocked so that frames don’t circle forever. Ring link R1 fails at the moment of the fault.',
+    watch: [
+      'RSTP unblocks R2, and the ring forwards again 50 ms later (illustrative). By network standards, a fast recovery.',
+      'Every trip frame sent in those 50 ms is lost: the first frame and four repeats. The repeat at 79.7 ms gets through: transfer time 64.0 ms instead of 2.05 ms.',
+      '52-AB opens at 114.0 ms (6.8 cyc) instead of 52.0 ms: clearing is 3.7 cycles slower.',
+    ],
+    tryIt: [
+      'Tap R1 and make it fail 2 s before the fault instead: the ring has long recovered and the trip is normal. The cost comes only when a failure and a trip overlap.',
+      'In ⚙ switch the redundancy to PRP, then tap the LAN A switch PBA and make it fail at the fault: nothing is lost, and the trip takes 2.03 ms. PRP has no recovery time.',
+      'Back on RSTP, fail switch PB1 at the fault: a ring can’t help a device whose only switch has died. PRP can, because every device has a second port.',
+    ],
+    takeaway: '“The network recovered in 50 ms” is a network answer; a trip is due in 3 ms. RSTP repairs the path after frames are lost, while PRP’s second copy is already on its way. That is why process buses that carry trips use PRP (or HSR).',
+    expect: { verdict: 'late' },
+  },
+  {
+    id: 'sv-stream',
+    track: 'Sampled Values',
+    title: 'The CT wiring is a stream',
+    zoom: 'trip',
+    setup: cfg => { cfg.features.sampledValues = true },
+    scenario: {},
+    intro: 'Merging unit MU-AB sits in the yard next to the breaker. It samples the line’s CTs and VTs and publishes them on the process bus as Sampled Values: 80 samples per cycle, 4800 a second. 21-AB no longer has CT or VT wiring; it measures from the stream.',
+    watch: [
+      'The Sampled Values panel draws each sample as it arrives: load current before the fault, fault current after it, nothing once the breaker has opened.',
+      'The sample counter (smpCnt) restarts at 0 on every second boundary, so the fault at t = 0 is sample 0 and one cycle later is sample 80. Every merging unit synchronized to the same clock numbers the same instant the same way.',
+      '21-AB trips at 16.7 ms on these samples, and the breaker opens at 52.0 ms, as with copper.',
+    ],
+    tryIt: [
+      'Step through and watch smpCnt and the values in “Sample at the cursor”.',
+      'Tap MU-AB and make it lose time sync 1 s before the fault: smpSynch drops to 0 and an alarm is raised, but 21-AB still trips at 16.7 ms. A function using one merging unit doesn’t need a common clock (Foundations E4).',
+    ],
+    takeaway: 'With Sampled Values the CT and VT circuits become a stream on the process bus. The relay protects only as well as that stream arrives: on time, counting, valid and synchronized.',
+    expect: { verdict: 'delivered' },
+  },
+  {
+    id: 'sv-lost',
+    track: 'Sampled Values',
+    title: 'No samples, no protection',
+    zoom: 'trip',
+    setup: cfg => { cfg.features.sampledValues = true },
+    scenario: { svFault: { 'AB.SV': { kind: 'stop', at: 0.005 } } },
+    intro: 'MU-AB stops sending 5 ms after the fault (a power-supply failure, say). 21-AB needs a full cycle of valid samples to decide.',
+    watch: [
+      'The samples stop at 5 ms. 1 ms later 21-AB declares the stream lost, blocks its protection and raises an alarm.',
+      '21-AB never trips: it has no valid samples, so it cannot see the fault. The outcome says line A–B’s own protection never acted.',
+    ],
+    tryIt: [
+      'Tap MU-AB and choose “Sample counter freezes”: frames keep arriving, but with the counter stuck the samples are stale. 21-AB blocks just the same.',
+      'Set MU-AB back to normal and make its link M1 fail 2 s before the fault: the SV alarm stands long before the fault, and the relay can’t trip when it comes.',
+      'With MU-AB normal, turn on ⚙ Redundant process bus, choose RSTP, and make ring link R1 fail at the fault: samples stop for the 50 ms the ring needs, and 21-AB trips at 66.7 ms, one cycle after they return.',
+    ],
+    takeaway: 'Without samples a relay is blind, and it blocks rather than trip on stale data. A lost stream is a protection failure, not just a network fault: the SV alarm has to be treated like a lost CT circuit.',
+    expect: { verdict: 'noTrip' },
   },
 ]

@@ -4,6 +4,7 @@ import { LINK_PRESETS, SUB_WRONG, IED_MODES, countFailures } from '../lib/scenar
 import { parseEnd } from '../lib/network'
 import { isActive } from '../lib/features'
 import { HelpLink } from './Help'
+import { SV_FAULTS } from '../lib/sv'
 
 // Device positions (viewBox units). Control house to yard: gateway, station
 // bus SB, relays, process bus PB, breaker IEDs. Left to right on wide screens,
@@ -37,6 +38,53 @@ const LAYOUTS = {
     PB: { x: 10, y: 270, w: 250, h: 22, bar: true },
     '52-AB': { x: 10, y: 314, w: 320, h: 122 },
     TS: { x: 268, y: 262, w: 66, h: 38 },
+  },
+  // With Sampled Values: merging units in the yard beside the breaker IEDs
+  widesv: {
+    vb: [0, 0, 640, 300],
+    GW: { x: 6, y: 64, w: 118, h: 72 },
+    SB: { x: 146, y: 12, w: 26, h: 176, bar: true },
+    '21-AB': { x: 196, y: 30, w: 196, h: 140 },
+    PB: { x: 416, y: 12, w: 26, h: 244, bar: true },
+    '52-AB': { x: 466, y: 36, w: 168, h: 128 },
+    'MU-AB': { x: 466, y: 176, w: 168, h: 56 },
+    TS: { x: 379, y: 262, w: 100, h: 34 },
+  },
+  wide2sv: {
+    vb: [0, 0, 640, 470],
+    GW: { x: 6, y: 152, w: 118, h: 72 },
+    SB: { x: 146, y: 8, w: 26, h: 362, bar: true },
+    '21-AB': { x: 196, y: 12, w: 196, h: 144 },
+    '52-AB': { x: 466, y: 12, w: 168, h: 144 },
+    'MU-AB': { x: 466, y: 162, w: 168, h: 46 },
+    '21-AX': { x: 196, y: 222, w: 196, h: 144 },
+    '52-AX': { x: 466, y: 222, w: 168, h: 144 },
+    'MU-AX': { x: 466, y: 372, w: 168, h: 46 },
+    PB: { x: 416, y: 8, w: 26, h: 414, bar: true },
+    TS: { x: 379, y: 428, w: 100, h: 34 },
+  },
+  narrowsv: {
+    vb: [0, 0, 350, 450],
+    SB: { x: 4, y: 4, w: 18, h: 200, bar: true },
+    GW: { x: 30, y: 4, w: 256, h: 48 },
+    '21-AB': { x: 30, y: 64, w: 256, h: 140 },
+    '52-AB': { x: 30, y: 216, w: 256, h: 122 },
+    'MU-AB': { x: 30, y: 350, w: 256, h: 50 },
+    TS: { x: 30, y: 412, w: 256, h: 38 },
+    PB: { x: 312, y: 60, w: 18, h: 396, bar: true },
+  },
+  narrow2sv: {
+    vb: [0, 0, 350, 850],
+    SB: { x: 4, y: 4, w: 18, h: 364, bar: true },
+    GW: { x: 30, y: 4, w: 256, h: 48 },
+    '21-AB': { x: 30, y: 64, w: 256, h: 144 },
+    '21-AX': { x: 30, y: 220, w: 256, h: 144 },
+    '52-AB': { x: 30, y: 376, w: 256, h: 140 },
+    'MU-AB': { x: 30, y: 528, w: 256, h: 48 },
+    '52-AX': { x: 30, y: 588, w: 256, h: 140 },
+    'MU-AX': { x: 30, y: 740, w: 256, h: 48 },
+    TS: { x: 30, y: 800, w: 256, h: 38 },
+    PB: { x: 312, y: 60, w: 18, h: 784, bar: true },
   },
   narrow2: {
     vb: [0, 0, 340, 492],
@@ -81,11 +129,30 @@ function splitPB(L) {
   if (pb.h > pb.w) {
     out.PBA = { ...pb, x: pb.x - 4, w: 16 }
     out.PBB = { ...pb, x: pb.x + 16, w: 16 }
-    if (out.TS) out.TS = { ...out.TS, x: out.PBA.x + 8 - out.TS.w / 2 }
+    if (out.TS && out.TS.x + out.TS.w / 2 >= pb.x && out.TS.x + out.TS.w / 2 <= pb.x + pb.w) out.TS = { ...out.TS, x: out.PBA.x + 8 - out.TS.w / 2 }
   } else {
     out.PBA = { ...pb, y: pb.y - 4, h: 14 }
     out.PBB = { ...pb, y: pb.y + 14, h: 14 }
     if (out.TS) out.TS = { ...out.TS, y: out.PBA.y + 7 - out.TS.h / 2 }
+  }
+  return out
+}
+
+// RSTP: two ring switches in place of the process-bus bar, PB1 facing the
+// relays and PB2 facing the breaker IEDs
+function splitRing(L) {
+  const pb = L.PB
+  if (!pb) return L
+  const out = { ...L }
+  delete out.PB
+  if (pb.h > pb.w) {
+    out.PB1 = { ...pb, x: pb.x - 12, w: 16 }
+    out.PB2 = { ...pb, x: pb.x + 16, w: 16 }
+    if (out.TS && out.TS.x + out.TS.w / 2 >= pb.x && out.TS.x + out.TS.w / 2 <= pb.x + pb.w) out.TS = { ...out.TS, x: out.PB1.x + 8 - out.TS.w / 2 }
+  } else {
+    out.PB1 = { ...pb, y: pb.y - 8, h: 14 }
+    out.PB2 = { ...pb, y: pb.y + 18, h: 14 }
+    if (out.TS) out.TS = { ...out.TS, y: out.PB1.y + 7 - out.TS.h / 2 }
   }
   return out
 }
@@ -133,10 +200,13 @@ export default function StationView({ config, run }) {
   const narrow = useNarrow()
   const two = config.ieds.some(d => d.id === '21-AX')
   const prpOn = config.switches.some(x => x.id === 'PBA')
-  const LAYOUT0 = (L => (prpOn ? splitPB(L) : L))(LAYOUTS[(narrow ? 'narrow' : 'wide') + (two ? '2' : '')])
+  const ringOn = config.switches.some(x => x.id === 'PB1')
+  const svOn = config.ieds.some(d => d.kind === 'mu')
+  const LAYOUT0 = (L => (prpOn ? splitPB(L) : ringOn ? splitRing(L) : L))(LAYOUTS[(narrow ? 'narrow' : 'wide') + (two ? '2' : '') + (svOn ? 'sv' : '')])
   // The view box ends below the lowest device present (the test set only with test mode)
   const present = [...config.ieds.map(d => d.id), ...config.switches.map(x => x.id)].filter(id => LAYOUT0[id])
   const LAYOUT = { ...LAYOUT0, vb: [0, 0, LAYOUT0.vb[2], Math.max(...present.map(id => LAYOUT0[id].y + LAYOUT0[id].h)) + 6] }
+  const svSub = id => (config.svSubs ?? []).find(s => s.ied === id)
   const isVert = (a, b) => Math.abs(a.y - b.y) > Math.abs(a.x - b.x)
   const testOn = isActive(config, 'testMode')
 
@@ -161,6 +231,11 @@ export default function StationView({ config, run }) {
     if (prpOn && lan) {
       const off = lan.endsWith('A') ? -5 : 5
       if (isVert(a, b)) { a.x += off; b.x += off } else { a.y += off; b.y += off }
+    }
+    // RSTP ring links: R1 near one end of the switches, R2 near the other
+    if (l.rstp) {
+      const s1 = LAYOUT[ea.dev], end = l.rstp === 'active' ? 0.12 : 0.88
+      if (s1.h > s1.w) { a.y = b.y = s1.y + s1.h * end } else { a.x = b.x = s1.x + s1.w * end }
     }
     return { a, b, A: ea.dev, B: eb.dev }
   }
@@ -190,16 +265,20 @@ export default function StationView({ config, run }) {
           const swDown = [p.A, p.B].some(x => scenario.switchDown[x] !== undefined && time >= scenario.switchDown[x])
           const down = (scenario.linkDown[l.id] !== undefined && time >= scenario.linkDown[l.id]) || swDown
           const failing = scenario.linkDown[l.id] !== undefined || scenario.drops.some(d => d.link === l.id)
+          const backsDown = l.rstp === 'standby' ? scenario.linkDown[l.backs] : undefined
+          const rec = (config.network.rstpRecoveryMs ?? 50) / 1000
+          const blocked = l.rstp === 'standby' && (backsDown === undefined || time < backsDown + rec)
+          const healing = l.rstp === 'standby' && backsDown !== undefined && time >= backsDown && time < backsDown + rec
           const mx = (p.a.x + p.b.x) / 2, my = (p.a.y + p.b.y) / 2
           const vertical = isVert(p.a, p.b)
           return (
             <g key={l.id} {...selectable('link', l.id)}>
               <line x1={p.a.x} y1={p.a.y} x2={p.b.x} y2={p.b.y} stroke="transparent" strokeWidth={22} />
               <line x1={p.a.x} y1={p.a.y} x2={p.b.x} y2={p.b.y}
-                stroke={down ? '#dc2626' : isSel('link', l.id) ? '#4f46e5' : '#9ca3af'} strokeWidth={isSel('link', l.id) ? 4 : 3}
-                strokeDasharray={down ? '6 4' : undefined} />
-              {(!prpOn || detail || !/[AB]$/.test(l.id) || failing) && <text x={vertical ? mx - 6 : mx} y={vertical ? my + 4 : p.a.y + 13} textAnchor={vertical ? 'end' : 'middle'} fontSize={10} fill={failing ? '#dc2626' : '#6b7280'} fontWeight={failing ? 700 : 400}>
-                {l.id}{down && !swDown ? ' DOWN' : ''}
+                stroke={down ? '#dc2626' : healing ? '#d97706' : blocked ? '#d1d5db' : isSel('link', l.id) ? '#4f46e5' : '#9ca3af'} strokeWidth={isSel('link', l.id) ? 4 : 3}
+                strokeDasharray={down || blocked ? '6 4' : undefined} />
+              {(detail || (!(prpOn && /[AB]$/.test(l.id)) && !l.rstp) || (failing && !l.rstp)) && <text x={vertical ? mx - 6 : mx} y={vertical ? my + 4 : p.a.y + 13} textAnchor={vertical ? 'end' : 'middle'} fontSize={10} fill={failing ? '#dc2626' : '#6b7280'} fontWeight={failing ? 700 : 400}>
+                {l.id}{down && !swDown ? ' DOWN' : ''}{healing ? ' reconfiguring' : blocked ? ' blocked' : ''}
               </text>}
             </g>
           )
@@ -225,7 +304,7 @@ export default function StationView({ config, run }) {
                 const l = config.links.find(x => x.a === `${sw.id}:${port}` || x.b === `${sw.id}:${port}`)
                 const peer = l && parseEnd(l.a).dev === sw.id ? parseEnd(l.b).dev : parseEnd(l?.a ?? '').dev
                 if (!peer || !LAYOUT[peer]) return null
-                if (sw.lan && !detail && !missing.length) return null // PRP bars: port numbers only with network detail
+                if ((sw.lan || ringOn && sw.id.startsWith('PB')) && !detail && !missing.length) return null // thin bars: port numbers only with network detail
                 const lp = linkPts(l)
                 const a = lp.A === sw.id ? lp.a : lp.b
                 const right = vert && a.x >= b.x + b.w - 1
@@ -255,6 +334,23 @@ export default function StationView({ config, run }) {
                 <rect x={b.x} y={b.y} width={b.w} height={b.h} rx={6} fill={on ? '#faf5ff' : '#fff'} stroke={isSel('ied', d.id) ? '#4f46e5' : deviceColor(d.id)} strokeWidth={1.5} strokeDasharray={on ? undefined : '4 3'} />
                 <text x={b.x + b.w / 2} y={b.y + 15} textAnchor="middle" fontSize={10.5} fontWeight="700" fill={deviceColor(d.id)}>Test set</text>
                 <text x={b.x + b.w / 2} y={b.y + 28} textAnchor="middle" fontSize={8.5} fill="#6b7280">{on ? 'simulating' : 'idle'}</text>
+              </g>
+            )
+          }
+          if (d.kind === 'mu') {
+            const cb = (config.svcbs ?? []).find(x => x.ied === d.id)
+            const sub = (config.svSubs ?? []).find(x => x.sv === cb?.id)
+            const st = sub && state.sv?.[sub.id]
+            const flt = scenario.svFault?.[cb?.id]
+            return (
+              <g key={d.id} {...selectable('ied', d.id)}>
+                <rect x={b.x} y={b.y} width={b.w} height={b.h} rx={8} fill="#fff" stroke={isSel('ied', d.id) ? '#4f46e5' : deviceColor(d.id)} strokeWidth={isSel('ied', d.id) ? 2.5 : 1.5} />
+                <text x={b.x + 10} y={b.y + 18} fontSize={12.5} fontWeight="700" fill={deviceColor(d.id)}>{d.id}</text>
+                <text x={b.x + b.w - 10} y={b.y + 18} fontSize={10} fill="#6b7280" textAnchor="end">{d.label}{flt ? ' ⚠' : ''}</text>
+                <text x={b.x + 10} y={b.y + 36} fontSize={10} fill="#374151">
+                  SV {Math.round(80 * config.freqHz)}/s · smpSynch <tspan fontWeight="700" fill={st?.synch === 0 ? '#dc2626' : '#374151'}>{st?.synch ?? 2}</tspan>
+                  {state.prp?.[d.id] && <tspan fill="#6b7280">{'  '}PRP <tspan fill={state.prp[d.id].A === 'ok' ? '#16a34a' : '#dc2626'}>A{state.prp[d.id].A === 'ok' ? '✓' : '✗'}</tspan> <tspan fill={state.prp[d.id].B === 'ok' ? '#16a34a' : '#dc2626'}>B{state.prp[d.id].B === 'ok' ? '✓' : '✗'}</tspan></tspan>}
+                </text>
               </g>
             )
           }
@@ -322,6 +418,9 @@ export default function StationView({ config, run }) {
                 <SubBadge key={x.id} x={b.x + 10} y={b.y + 96 + i * 18}
                   label={`Sub ${config.gocbs.find(g => g.id === x.gocb).label}`} status={subOf(x.id)} />
               ))}
+              {svSub(d.id) && (
+                <SubBadge x={b.x + 10} y={b.y + 96 + subs.length * 18} label="Sub SV" status={state.sv?.[svSub(d.id).id]?.status ?? 'healthy'} />
+              )}
               <text x={b.x + 10} y={b.y + b.h - 8} fontSize={9} fill="#9ca3af">
                 pub {config.gocbs.filter(g => g.ied === d.id).map(g => g.label).join(', ')}
               </text>
@@ -358,6 +457,14 @@ export default function StationView({ config, run }) {
         })}
       </svg>
 
+      {ringOn && (() => {
+        const r1 = config.links.find(l => l.rstp === 'active'), r2 = config.links.find(l => l.rstp === 'standby')
+        const d = scenario.linkDown[r1.id], rec = (config.network.rstpRecoveryMs ?? 50) / 1000
+        const st = d === undefined || time < d ? { t: `${r1.id} forwarding, ${r2.id} blocked by spanning tree`, c: 'text-gray-500' }
+          : time < d + rec ? { t: `${r1.id} down, ${r2.id} reconfiguring until ${((d + rec) * 1000).toFixed(1)} ms: frames across the ring are lost`, c: 'text-amber-700 font-semibold' }
+          : { t: `${r1.id} down, ${r2.id} forwarding: recovered`, c: 'text-gray-700' }
+        return <div className={`text-xs ${st.c}`}>RSTP ring: {st.t}</div>
+      })()}
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span className={nFail ? 'font-semibold text-red-700' : 'text-gray-400'}>
           {nFail ? `${nFail} failure${nFail > 1 ? 's' : ''} injected` : 'No failures injected'}
@@ -480,6 +587,25 @@ function FailurePanel({ config, sel, scenario, setScenario, onClose }) {
             <span className="text-xs text-gray-500">Simulated messages carry the simulation flag. Only IEDs in simulation mode use them.</span>
           </>
         )}
+        {ied.kind === 'mu' && (() => {
+          const cb = (config.svcbs ?? []).find(x => x.ied === ied.id)
+          const cur = SV_FAULTS.find(f => f.kind && scenario.svFault?.[cb.id]?.kind === f.kind && scenario.svFault?.[cb.id]?.at === f.at)?.id ?? ''
+          const set = v => setScenario(sc => {
+            const svFault = { ...sc.svFault }
+            const f = SV_FAULTS.find(x => x.id === v)
+            if (f?.kind) svFault[cb.id] = { kind: f.kind, at: f.at }
+            else delete svFault[cb.id]
+            return { ...sc, svFault }
+          })
+          return (
+            <label className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 sm:gap-2">
+              <span>Merging unit</span>
+              <select value={cur} onChange={e => set(e.target.value)} className="border border-gray-300 rounded px-2 py-1 bg-white">
+                {SV_FAULTS.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
+              </select>
+            </label>
+          )
+        })()}
         {ied.kind === 'hmi' && <span className="text-gray-500">The gateway talks MMS to SCADA, which the simulator doesn’t model yet. Fail the station-bus switch to see that protection doesn’t depend on it.</span>}
         {isActive(config, 'testMode') && (ied.kind === 'relay' || ied.kind === 'breaker') && (
           <label className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 sm:gap-2">

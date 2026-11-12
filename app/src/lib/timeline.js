@@ -86,11 +86,42 @@ export function simulate(baseConfig, scenarioIn) {
   const pubs = Object.fromEntries(cfg.gocbs.map(g => [g.id,
     { stNum: 1, sqNum: 0, changeT: WARM_T, gen: 0, values: datasetValues(g, ieds[g.ied], iedById(cfg, g.ied)) }]))
   let fault = false
+  // ── Sampled Values: when each relay's stream is good, from the network path
+  // and the merging unit's own state; samples are synthesized only for display ──
+  const sv = {}       // subId → { status, synch, reason } (in snapshots)
+  const svHealth = {} // subId → [{ t0, t1, arriving, frozenAt, invalid, synch, reason }]
+  for (const sub of cfg.svSubs ?? []) {
+    const cb = cfg.svcbs.find(x => x.id === sub.sv)
+    const flt = scenario.svFault?.[cb.id]
+    const ts = new Set([WARM_T, 0])
+    for (const t of [...Object.values(scenario.linkDown), ...Object.values(scenario.switchDown)]) if (Number.isFinite(t)) ts.add(t)
+    for (const l of cfg.links.filter(x => x.rstp === 'standby')) {
+      const d = scenario.linkDown[l.backs]
+      if (Number.isFinite(d)) ts.add(d + (cfg.network.rstpRecoveryMs ?? 50) / 1000)
+    }
+    if (flt && Number.isFinite(flt.at)) ts.add(flt.at)
+    const times = [...ts].filter(t => t >= WARM_T).sort((a, b) => a - b)
+    svHealth[sub.id] = times.map((t0, i) => {
+      const probe = { pub: cb.ied, gocb: cb.id, dst: cb.mac, vlan: cb.vlan, length: cb.length, pdu: { stNum: 0, sqNum: 0 }, port: null }
+      const r = forward(topo, cfg, scenario, probe, t0 + 1e-9)
+      const reaches = r.arrivals.some(a => a.ied === sub.ied)
+      const loss = r.losses.find(x => x.ied === sub.ied)
+      const on = k => flt?.kind === k && t0 >= flt.at - 1e-12
+      return {
+        t0, t1: times[i + 1] ?? Infinity,
+        arriving: reaches && !on('stop'), frozenAt: on('freeze') ? flt.at : null, invalid: on('invalid'), synch: on('sync') ? 0 : 2,
+        reason: on('stop') ? `${cb.ied} stopped sending` : !reaches ? (loss?.where ?? 'no path') : on('freeze') ? 'the sample counter stopped advancing (frozen samples)' : on('invalid') ? 'samples flagged invalid' : null,
+      }
+    })
+    sv[sub.id] = { status: 'healthy', synch: 2, reason: null }
+  }
+  const svGood = h => h.arriving && h.frozenAt === null && !h.invalid
+  const svStatusOf = h => (!h.arriving ? 'lost' : h.frozenAt !== null ? 'frozen' : h.invalid ? 'invalid' : 'healthy')
   // PRP supervision per doubly attached node: last frame seen on each LAN
   const prp = Object.fromEntries(danps.map(id => [id, { A: 'ok', B: 'ok' }]))
   const lastSeen = Object.fromEntries(danps.map(id => [id, { A: WARM_T, B: WARM_T }]))
 
-  const snapshot = () => structuredClone({ fault, ieds, subs, prp, pubs: Object.fromEntries(Object.entries(pubs).map(([k, p]) => [k, { stNum: p.stNum, sqNum: p.sqNum }])) })
+  const snapshot = () => structuredClone({ fault, ieds, subs, prp, sv, pubs: Object.fromEntries(Object.entries(pubs).map(([k, p]) => [k, { stNum: p.stNum, sqNum: p.sqNum }])) })
   const log = (t, kind, text, dev = null, extra = {}) => {
     if (t >= START_T - EPS) events.push({ t, kind, text, dev, ...extra, state: snapshot() })
   }
@@ -344,6 +375,14 @@ export function simulate(baseConfig, scenarioIn) {
     if (t === null || t === undefined) continue
     if (t >= START_T) q.push(t, () => log(t, 'link', `Link ${link} goes down`, null, { link }))
   }
+  // RSTP: a standby ring link takes over once the recovery time has passed
+  for (const l of cfg.links.filter(x => x.rstp === 'standby')) {
+    const d = scenario.linkDown[l.backs]
+    if (d === undefined || d === null) continue
+    const rec = (cfg.network.rstpRecoveryMs ?? 50) / 1000
+    if (d >= START_T) q.push(d, () => log(d, 'rstp', `RSTP: ${l.backs} lost, the ring reconfigures; frames across it are lost until ${l.id} forwards`, null))
+    if (d + rec >= START_T) q.push(d + rec, () => log(d + rec, 'rstp', `RSTP: ${l.id} unblocked and forwarding, ${rec * 1000} ms after ${l.backs} failed. The network has recovered`, null))
+  }
   for (const [sw, t] of Object.entries(scenario.switchDown)) {
     if (t === null || t === undefined) continue
     if (t >= START_T) q.push(t, () => log(t, 'link', `Switch ${sw} fails`, null, { sw }))
@@ -356,13 +395,60 @@ export function simulate(baseConfig, scenarioIn) {
       dataChanged(tsIed.id, 'trip', ta)
     })
   }
+  // SV supervision events: lost / frozen after the detection time, invalid at once
+  const lossS = (T.svLossMs ?? 1) / 1000
+  for (const sub of cfg.svSubs ?? []) {
+    const cb = cfg.svcbs.find(x => x.id === sub.sv)
+    let prev = { status: 'healthy', synch: 2 }
+    for (const h of svHealth[sub.id]) {
+      const st = svStatusOf(h)
+      if (st !== prev.status) {
+        const at = st === 'lost' || st === 'frozen' ? h.t0 + lossS : h.t0
+        q.push(at, () => {
+          sv[sub.id] = { ...sv[sub.id], status: st, reason: h.reason }
+          if (st === 'healthy') log(at, 'svOk', `${sub.ied}: valid samples from ${cb.ied} again`, sub.ied, { sub: sub.id })
+          else log(at, 'svLost', `${sub.ied}: SV from ${cb.ied} ${st === 'lost' ? 'lost' : st}: ${h.reason}. Protection using it is blocked. Alarm`, sub.ied, { sub: sub.id })
+        })
+      }
+      if (h.synch !== prev.synch) {
+        q.push(h.t0, () => {
+          sv[sub.id] = { ...sv[sub.id], synch: h.synch }
+          log(h.t0, 'svSync', h.synch ? `${cb.ied} time sync restored: smpSynch ${h.synch}` : `${cb.ied} lost time sync: smpSynch 0. ${sub.ied} uses one merging unit and carries on; a function comparing merging units would block. Alarm`, cb.ied, { sub: sub.id })
+        })
+      }
+      prev = { status: st, synch: h.synch }
+    }
+  }
+  q.push(START_T, () => {
+    for (const sub of cfg.svSubs ?? []) {
+      if (sv[sub.id].status !== 'healthy') log(START_T, 'svLost', `${sub.ied}: SV alarm standing: ${sv[sub.id].reason}`, sub.ied, { sub: sub.id })
+    }
+  })
+
   const faultLine = cfg.script?.faultLine ?? 'AB'
   q.push(0, () => { fault = true; log(0, 'fault', `Fault on line ${faultLine[0]}–${faultLine[1]}`, null) })
   for (const r of cfg.ieds.filter(d => d.kind === 'relay' && (d.line ?? d.bay) === faultLine)) {
-    const tt = T.relayTripCycles / f
+    const t0trip = T.relayTripCycles / f
+    let tt = t0trip
+    // A relay measuring from SV needs a cycle of good samples after the fault
+    const svSub = (cfg.svSubs ?? []).find(s => s.ied === r.id)
+    if (svSub) {
+      tt = null
+      for (const h of svHealth[svSub.id].filter(svGood)) {
+        if (h.t1 <= 0) continue
+        const cand = h.t0 <= 0 ? t0trip : Math.max(t0trip, h.t0 + 1 / f)
+        if (cand < h.t1) { tt = cand; break }
+      }
+      if (tt === null) {
+        const bad = svHealth[svSub.id].find(h => h.t0 <= t0trip && h.t1 > t0trip) ?? svHealth[svSub.id].at(-1)
+        q.push(t0trip, () => log(t0trip, 'noTrip', `${r.id} has no valid samples (${bad.reason ?? 'stream not usable'}): distance protection blocked, the fault is not seen`, r.id))
+        continue
+      }
+    }
+    const late = tt > t0trip + 1e-9
     q.push(tt, () => {
       ieds[r.id].trip = true
-      log(tt, 'trip', `${r.id} trips (PTRC Tr.general = true)`, r.id)
+      log(tt, 'trip', `${r.id} trips (PTRC Tr.general = true)${late ? ', one cycle after valid samples returned' : ''}`, r.id)
       dataChanged(r.id, 'trip', tt)
     })
     // Breaker failure: if current still flows (own breaker still closed) when the timer runs out
@@ -385,7 +471,7 @@ export function simulate(baseConfig, scenarioIn) {
   shown.forEach((fr, i) => { fr.no = i + 1 })
   for (const fr of shown) for (const rx of Object.values(fr.rx)) if (rx.fate === 'pending') rx.fate = 'inFlight'
   const outcome = judge(cfg, events, shown)
-  return { events, frames: shown, outcome, startT: START_T, endT: END_T, config: cfg, profile: prof }
+  return { events, frames: shown, outcome, startT: START_T, endT: END_T, config: cfg, profile: prof, svHealth }
 }
 
 export function valueText(frame) {
@@ -437,6 +523,13 @@ function judge(cfg, events, frames) {
     out.verdict = inClass ? 'delivered' : 'late'
   }
 
+  if (!tripEv && relay) {
+    out.verdict = 'noTrip'
+    const nt = events.find(e => e.kind === 'noTrip' && e.dev === relay.id)
+    notes.push({ level: 'bad', text: `${relay.id} did not trip: ${nt ? nt.text.replace(`${relay.id} has `, 'it had ') : 'no trip'}. Line A–B’s own protection never acted; remote backup at the far ends has to clear the fault (the Line Protection Simulator shows that part).` })
+  } else if (tripEv && tripEv.t > (cfg.timing.relayTripCycles / f) + 1e-9) {
+    notes.push({ level: 'warn', text: `${relay.id} tripped at ${fmtProt(tripEv.t, f)} instead of ${fmtProt(cfg.timing.relayTripCycles / f, f)}: it needed a cycle of valid samples after they returned.` })
+  }
   if (preOpen) {
     out.verdict = 'openBefore'
     out.openT = preOpen.t
@@ -482,6 +575,10 @@ function judge(cfg, events, frames) {
     const lostCopy = cp?.find(c => c.t === null)
     if (lostCopy) notes.push({ level: 'info', text: `PRP: the LAN ${lostCopy.lan} copy of the trip was lost (${lostCopy.lost}); the LAN ${lostCopy.lan === 'A' ? 'B' : 'A'} copy delivered it with no delay.` })
   }
+  for (const e of events.filter(x => x.kind === 'svLost' || (x.kind === 'svSync' && /lost/.test(x.text)))) {
+    const when = e.t <= START_T + 1e-9 ? 'standing since before the run' : `at ${fmtTime(e.t)}`
+    notes.push({ level: 'warn', text: `${e.kind === 'svSync' ? 'Time-sync' : 'SV'} alarm, ${e.dev}: ${when}.` })
+  }
   const prpAlarms = events.filter(e => e.kind === 'prpLan')
   for (const e of prpAlarms) {
     const when = e.t <= START_T + 1e-9 ? 'standing since before the run' : `at ${fmtTime(e.t)}`
@@ -497,7 +594,7 @@ function judge(cfg, events, frames) {
       notes.push({ level: 'warn', text: `Alarm, ${sub.ied} ${g.label} subscription: ${when}.` })
     }
   }
-  const silent = out.verdict !== 'delivered' && out.verdict !== 'late' && tripSub && !events.some(e => e.sub === tripSub.id && ['alarm', 'stale', 'mismatch'].includes(e.kind))
+  const silent = ['notDelivered', 'notCleared'].includes(out.verdict) && tripSub && !events.some(e => e.sub === tripSub.id && ['alarm', 'stale', 'mismatch'].includes(e.kind))
   const why = bkr?.lphdSim ? `: ${tripSub.ied}'s subscription stayed healthy, fed by the test set. Only ${bkr.id}'s simulation mode, on its display and the HMI, showed it`
     : relay?.mode !== 'on' ? `: ${tripSub.ied}'s subscription stayed healthy. Only ${relay.id}'s mode, on its display and the HMI, showed it` : ''
   if (silent && !stuckEv) notes.push({ level: 'bad', text: `No alarm warned of it${why}.` })
