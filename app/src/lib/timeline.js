@@ -53,15 +53,22 @@ export function simulate(baseConfig, scenarioIn) {
   const subsFor = g => subsOfGocb(cfg, g.simOf ?? g.id)
   // PRP: which LAN each switch belongs to, and which IEDs are attached to both
   const lanOf = sw => cfg.switches.find(x => x.id === sw)?.lan ?? null
+  // A node is keyed by its IED, or "<ied>@S" for a relay's station port (port S)
   const lansOfIed = {}
+  const nodeOf = {} // key → { dev, port prefix, frames: supervised by PRP supervision frames }
   for (const l of cfg.links) {
     const [a, b] = [l.a, l.b].map(parseEnd)
     for (const [x, y] of [[a, b], [b, a]]) {
       const lan = lanOf(y.dev)
-      if (lan) (lansOfIed[x.dev] ??= new Set()).add(lan)
+      if (!lan) continue
+      const pf = String(x.port ?? '').split('.')[0]
+      const key = pf === 'S' ? `${x.dev}@S` : x.dev
+      ;(lansOfIed[key] ??= new Set()).add(lan)
+      nodeOf[key] = { dev: x.dev, port: pf === 'S' || pf === 'P' ? pf : null, frames: cfg.switches.find(sw => sw.id === y.dev)?.prpSupervision === 'frames' }
     }
   }
   const danps = Object.keys(lansOfIed).filter(id => lansOfIed[id].size === 2)
+  const nodeName = k => (k.endsWith('@S') ? `${nodeOf[k].dev} (station port)` : k)
   const lifeCheck = (cfg.network.prpLifeCheckMs ?? 2000) / 1000
   const rctSeq = {}
   const topo = buildTopo(cfg)
@@ -92,7 +99,7 @@ export function simulate(baseConfig, scenarioIn) {
   // ── Time sync: grandmasters and each merging unit's smpSynch over time ──
   const gmIeds = cfg.ieds.filter(d => d.kind === 'gm')
   const rstpCuts = cfg.links.filter(x => x.rstp === 'standby').map(l => scenario.linkDown[l.backs]).filter(Number.isFinite).map(d => d + (cfg.network.rstpRecoveryMs ?? 50) / 1000)
-  const netCuts = [...Object.values(scenario.linkDown), ...Object.values(scenario.switchDown)].filter(Number.isFinite).concat(rstpCuts)
+  const netCuts = [...Object.values(scenario.linkDown), ...Object.values(scenario.switchDown), ...Object.values(scenario.linkUp ?? {}), ...Object.values(scenario.switchUp ?? {})].filter(Number.isFinite).concat(rstpCuts)
   const ptp = gmIeds.length && cfg.ptp ? ptpModel({
     gms: gmIeds.map(g => ({ id: g.id, priority2: g.priority2 ?? 1 })),
     mus: cfg.ieds.filter(d => d.kind === 'mu').map(d => d.id),
@@ -107,7 +114,7 @@ export function simulate(baseConfig, scenarioIn) {
     const cb = cfg.svcbs.find(x => x.id === sub.sv)
     const flt = scenario.svFault?.[cb.id]
     const ts = new Set([WARM_T, 0])
-    for (const t of [...Object.values(scenario.linkDown), ...Object.values(scenario.switchDown)]) if (Number.isFinite(t)) ts.add(t)
+    for (const t of netCuts) ts.add(t)
     for (const l of cfg.links.filter(x => x.rstp === 'standby')) {
       const d = scenario.linkDown[l.backs]
       if (Number.isFinite(d)) ts.add(d + (cfg.network.rstpRecoveryMs ?? 50) / 1000)
@@ -136,7 +143,39 @@ export function simulate(baseConfig, scenarioIn) {
   const prp = Object.fromEntries(danps.map(id => [id, { A: 'ok', B: 'ok' }]))
   const lastSeen = Object.fromEntries(danps.map(id => [id, { A: WARM_T, B: WARM_T }]))
 
-  const snapshot = () => structuredClone({ fault, ieds, subs, prp, sv, ptp: ptpNow, pubs: Object.fromEntries(Object.entries(pubs).map(([k, p]) => [k, { stNum: p.stNum, sqNum: p.sqNum }])) })
+  // ── MMS (feature mms): reports from each relay to the gateway over the station bus ──
+  const rcbs = cfg.rcbs ?? []
+  const M = cfg.mms ?? { serverMs: 5, assocTimeoutS: 1, reconnectS: 0.3 }
+  const mms = {}   // relay → { assoc: 'up' | 'lost' | 'connecting', queued, buffered } (in snapshots)
+  const scada = {} // relay → what the gateway last heard: { trip, bf, pos, t, stale } (in snapshots)
+  const reports = []
+  const rcbSt = {}
+  // The VLAN a device's port sits in (from the switch port it connects to)
+  const portVlan = (dev, pf) => {
+    for (const l of cfg.links) for (const [x, y] of [[l.a, l.b], [l.b, l.a]]) {
+      const e = parseEnd(x)
+      if (e.dev !== dev || (pf && !String(e.port ?? '').startsWith(pf))) continue
+      const o = parseEnd(y)
+      const v = cfg.switches.find(w => w.id === o.dev)?.ports[o.port]?.vlans?.[0]
+      if (v) return v
+    }
+    return 0
+  }
+  // Network time of one report (TCP segment, ~200 bytes) from the relay to the gateway, or null if no path
+  const mmsTransit = (rcb, t) => {
+    const client = iedById(cfg, rcb.client)
+    const r = forward(topo, cfg, scenario, { pub: rcb.ied, gocb: rcb.id, dst: client.mac, vlan: { id: portVlan(rcb.ied, rcb.port), priority: 0 }, length: 200, pdu: { stNum: 0, sqNum: 0 }, port: rcb.port }, t)
+    const a = r.arrivals.filter(x => x.ied === rcb.client).sort((x, y) => x.t - y.t)[0]
+    return a ? a.t - t : null
+  }
+  for (const rcb of rcbs) {
+    const up = mmsTransit(rcb, WARM_T) !== null
+    rcbSt[rcb.id] = { assoc: up ? 'up' : 'lost', queued: [], buffer: [], seq: 0, downSince: up ? null : WARM_T, everUp: up }
+    mms[rcb.ied] = { assoc: up ? 'up' : 'lost', queued: 0, buffered: 0, unbuffered: !rcb.buffered }
+    scada[rcb.ied] = up ? { trip: false, bf: false, pos: null, t: null, stale: false } : { trip: null, bf: null, pos: null, t: null, stale: true }
+  }
+
+  const snapshot = () => structuredClone({ fault, ieds, subs, prp, sv, mms, scada, ptp: ptpNow, pubs: Object.fromEntries(Object.entries(pubs).map(([k, p]) => [k, { stNum: p.stNum, sqNum: p.sqNum }])) })
   const log = (t, kind, text, dev = null, extra = {}) => {
     if (t >= START_T - EPS) events.push({ t, kind, text, dev, ...extra, state: snapshot() })
   }
@@ -194,6 +233,7 @@ export function simulate(baseConfig, scenarioIn) {
   // An IED's data changed at t: each control block carrying that signal
   // publishes a new state after the publisher's stack time.
   function dataChanged(iedId, signal, t) {
+    mmsChange(iedId, signal, t)
     for (const g of cfg.gocbs.filter(x => x.ied === iedId && x.entries.some(e => e.signal === signal))) {
       const values = datasetValues(g, ieds[iedId], iedById(cfg, iedId))
       q.push(t + pubS, () => {
@@ -317,7 +357,9 @@ export function simulate(baseConfig, scenarioIn) {
     }
     if (sub.use === 'breakerPos') {
       const pos = frame.pdu.allData.find(d => d.type === 'Dbpos')?.value
+      const was = st.seenPos
       st.seenPos = pos
+      if (pos !== was) mmsChange(sub.ied, 'pos', t)
       const pub = cfg.gocbs.find(x => x.id === sub.gocb).ied
       log(t, 'seen', `${sub.ied} sees ${pub} ${DBPOS_TEXT[pos] ?? pos}`, sub.ied)
     }
@@ -361,6 +403,120 @@ export function simulate(baseConfig, scenarioIn) {
     })
   }
 
+  // ── MMS ──
+  const VAL_TEXT = (signal, v) => (signal === 'pos' ? DBPOS_TEXT[v] ?? String(v) : String(v))
+  const syncMms = rcb => {
+    const m = rcbSt[rcb.id]
+    mms[rcb.ied] = { assoc: m.assoc, queued: m.queued.length, buffered: m.buffer.length, unbuffered: !rcb.buffered }
+  }
+  // A reported value changed in a relay: its report leaves after the server time
+  function mmsChange(iedId, signal, t) {
+    const rcb = rcbs.find(r => r.ied === iedId)
+    const item = rcb?.items.find(x => x.signal === signal)
+    if (!item) return
+    const st = ieds[iedId]
+    const value = signal === 'pos' ? st.seenPos : !!st[signal]
+    const ts = t + M.serverMs / 1000
+    q.push(ts, () => sendReport(rcb, item, value, t, ts))
+  }
+  function sendReport(rcb, item, value, tEvent, ts) {
+    const m = rcbSt[rcb.id]
+    const rec = { no: reports.length + 1, rcb: rcb.id, ied: rcb.ied, client: rcb.client, ref: item.ref, label: item.label, signal: item.signal,
+      value, tEvent, tSent: ts, tRx: null, fate: null, seqNum: m.seq++, buffered: rcb.buffered }
+    reports.push(rec)
+    const tr = m.assoc === 'up' ? mmsTransit(rcb, ts) : null
+    if (m.assoc === 'up' && tr !== null) {
+      rec.fate = 'onTime'
+      q.push(ts + tr, () => deliver(rcb, rec, ts + tr))
+    } else if (m.assoc === 'up') {
+      rec.fate = 'tcp' // no path: TCP keeps retransmitting the segment
+      m.queued.push(rec)
+    } else if (rcb.buffered) {
+      rec.fate = 'buffer' // association down: the BRCB keeps the entry
+      m.buffer.push(rec)
+    } else {
+      rec.fate = 'lost'
+      rec.reason = 'its report is unbuffered, and nothing is kept while the association is down'
+      log(ts, 'mmsDrop', `${rcb.ied}: ${item.label} = ${VAL_TEXT(item.signal, value)}, but the association is down and the report is unbuffered: this change is never reported`, rcb.ied, { rcb: rcb.id, report: rec.no })
+    }
+    syncMms(rcb)
+  }
+  function deliver(rcb, rec, t) {
+    rec.tRx = t
+    const sc = scada[rcb.ied]
+    sc[rec.signal] = rec.value
+    sc.t = rec.tEvent
+    const late = rec.fate === 'tcp' ? `, by TCP retransmission ${fmtDur(t - rec.tEvent)} after the event` : rec.fate === 'buffer' ? `, from the report buffer ${fmtDur(t - rec.tEvent)} after the event` : ''
+    log(t, 'report', `${rcb.client} receives a report from ${rcb.ied}: ${rec.ref.split('/').pop()} = ${VAL_TEXT(rec.signal, rec.value)} (time stamp ${fmtTime(rec.tEvent)})${late}`, rcb.client, { rcb: rcb.id, ied: rcb.ied, report: rec.no })
+  }
+  function assocLost(rcb, t) {
+    const m = rcbSt[rcb.id]
+    m.assoc = 'lost'
+    scada[rcb.ied].stale = true
+    let extra = ''
+    if (m.queued.length) {
+      if (rcb.buffered) { for (const r of m.queued) r.fate = 'buffer'; m.buffer.push(...m.queued) }
+      else {
+        for (const r of m.queued) { r.fate = 'lost'; r.reason = 'its unbuffered report was still in TCP when the connection was dropped, and was lost with it' }
+        extra = ` ${m.queued.length} unbuffered report${m.queued.length > 1 ? 's' : ''} still in TCP ${m.queued.length > 1 ? 'are' : 'is'} lost with the connection.`
+      }
+      m.queued = []
+    }
+    syncMms(rcb)
+    log(t, 'mmsLost', `${rcb.client}: no answer from ${rcb.ied} for ${M.assocTimeoutS} s, association lost. SCADA shows ${rcb.ied}'s data as not current. Alarm.${extra}`, rcb.client, { rcb: rcb.id, ied: rcb.ied })
+  }
+  function reconnect(rcb, t) {
+    const m = rcbSt[rcb.id]
+    const tr = mmsTransit(rcb, t)
+    if (tr === null) { m.assoc = 'lost'; syncMms(rcb); return }
+    m.assoc = 'up'
+    m.everUp = true
+    log(t, 'mmsOk', `${rcb.client} re-establishes the association with ${rcb.ied} and enables its ${rcb.buffered ? 'buffered' : 'unbuffered'} report${rcb.buffered && m.buffer.length ? `: ${m.buffer.length} buffered ${m.buffer.length > 1 ? 'entries follow' : 'entry follows'}` : ''}`, rcb.client, { rcb: rcb.id, ied: rcb.ied })
+    for (const r of m.buffer) q.push(t + tr, () => deliver(rcb, r, t + tr))
+    m.buffer = []
+    syncMms(rcb)
+    // General interrogation: the gateway reads the current values
+    const tg = t + tr + 1e-4
+    q.push(tg, () => {
+      const st = ieds[rcb.ied]
+      const sc = scada[rcb.ied]
+      for (const it of rcb.items) sc[it.signal] = it.signal === 'pos' ? st.seenPos : !!st[it.signal]
+      sc.stale = false
+      log(tg, 'gi', `${rcb.client}: general interrogation of ${rcb.ied}, SCADA shows ${rcb.items.map(it => `${it.label} ${VAL_TEXT(it.signal, sc[it.signal])}`).join(', ')}`, rcb.client, { rcb: rcb.id, ied: rcb.ied })
+    })
+  }
+  // The station bus path changes only at network cut times
+  const mmsCutTimes = [...new Set(netCuts)].filter(t => t >= WARM_T).sort((a, b) => a - b)
+  for (const rcb of rcbs) {
+    const m = rcbSt[rcb.id]
+    if (!m.everUp) {
+      // Never connected: try again when the path appears
+      m.assoc = 'lost'
+    }
+    for (const t of mmsCutTimes) q.push(t, () => {
+      const tr = mmsTransit(rcb, t + 1e-9)
+      if (tr === null && m.downSince === null) {
+        m.downSince = t
+        if (m.assoc === 'up') {
+          const d = t
+          q.push(t + M.assocTimeoutS, () => { if (m.downSince === d && m.assoc === 'up') assocLost(rcb, d + M.assocTimeoutS) })
+        }
+      } else if (tr !== null && m.downSince !== null) {
+        m.downSince = null
+        if (m.assoc === 'up') {
+          for (const r of m.queued) q.push(t + tr, () => deliver(rcb, r, t + tr))
+          m.queued = []
+          syncMms(rcb)
+        } else if (m.assoc === 'lost') {
+          m.assoc = 'connecting'
+          syncMms(rcb)
+          const tc = t + M.reconnectS
+          q.push(tc, () => (m.downSince === null ? reconnect(rcb, tc) : (m.assoc = 'lost', syncMms(rcb))))
+        }
+      }
+    })
+  }
+
   // ── Script ──
   cfg.gocbs.forEach((g, i) => {
     const hb = prof.heartbeatMs / 1000
@@ -369,15 +525,42 @@ export function simulate(baseConfig, scenarioIn) {
     q.push(first, () => send(g, first, Infinity))
   })
   // A LAN that never carried anything (down from the start) is silent from boot
-  for (const id of danps) for (const lan of ['A', 'B']) {
+  for (const id of danps.filter(k => !nodeOf[k].frames)) for (const lan of ['A', 'B']) {
     const due = WARM_T + lifeCheck
     q.push(due, () => { if (lastSeen[id][lan] === WARM_T && prp[id][lan] === 'ok') prp[id][lan] = 'lost' })
+  }
+  // Station-bus nodes: every node sends a PRP supervision frame on each LAN every
+  // life-check interval; a LAN with no supervision frame from any peer alarms
+  const frameNodes = danps.filter(k => nodeOf[k].frames)
+  const heardOn = (k, lan, t) => frameNodes.some(k2 => {
+    if (k2 === k) return false
+    const n2 = nodeOf[k2]
+    const r = forward(topo, cfg, scenario, { pub: n2.dev, gocb: 'PRP', dst: '01-15-4E-00-01-00', vlan: { id: portVlan(n2.dev, n2.port), priority: 0 }, length: 70, pdu: { stNum: 0, sqNum: 0 }, port: n2.port }, t)
+    return r.arrivals.some(a => a.ied === nodeOf[k].dev && lanOf(a.via) === lan)
+  })
+  for (const k of frameNodes) for (const lan of ['A', 'B']) {
+    for (const t of [WARM_T, ...mmsCutTimes]) q.push(t, () => {
+      const h = heardOn(k, lan, t + 1e-9)
+      if (h && prp[k][lan] !== 'ok') {
+        prp[k][lan] = 'ok'
+        log(t, 'prpOk', `${nodeName(k)}: supervision frames on LAN ${lan} again`, nodeOf[k].dev, { lan, net: 'station' })
+      } else if (!h && prp[k][lan] === 'ok') {
+        const due = t + lifeCheck
+        q.push(due, () => {
+          if (prp[k][lan] === 'ok' && !heardOn(k, lan, due)) {
+            prp[k][lan] = 'lost'
+            log(due, 'prpLan', `${nodeName(k)}: no PRP supervision frame on LAN ${lan} for ${lifeCheck * 1000} ms. PRP alarm: still connected over LAN ${lan === 'A' ? 'B' : 'A'}, but no longer redundant`, nodeOf[k].dev, { lan, net: 'station' })
+          }
+        })
+      }
+    })
   }
   q.push(START_T, () => {
     log(START_T, 'start', 'Quiet period: each publisher sends a heartbeat every second', null)
     for (const id of danps) for (const lan of ['A', 'B']) {
-      if (prp[id][lan] === 'lost') log(START_T, 'prpLan', `${id}: PRP alarm standing: nothing received on LAN ${lan}`, id, { lan })
+      if (prp[id][lan] === 'lost') log(START_T, 'prpLan', `${nodeName(id)}: PRP alarm standing: nothing received on LAN ${lan}`, nodeOf[id].dev, { lan, ...(nodeOf[id].frames ? { net: 'station' } : {}) })
     }
+    for (const rcb of rcbs) if (rcbSt[rcb.id].assoc !== 'up') log(START_T, 'mmsLost', `${rcb.client}: no association with ${rcb.ied} (standing): SCADA has no data from it. Alarm`, rcb.client, { rcb: rcb.id, ied: rcb.ied })
     for (const sub of cfg.subscriptions) {
       const s = subs[sub.id]
       if (s.status !== 'healthy') {
@@ -520,7 +703,8 @@ export function simulate(baseConfig, scenarioIn) {
   shown.forEach((fr, i) => { fr.no = i + 1 })
   for (const fr of shown) for (const rx of Object.values(fr.rx)) if (rx.fate === 'pending') rx.fate = 'inFlight'
   const outcome = judge(cfg, events, shown)
-  return { events, frames: shown, outcome, startT: START_T, endT: END_T, config: cfg, profile: prof, svHealth }
+  mmsNotes(cfg, events, reports, outcome)
+  return { events, frames: shown, outcome, startT: START_T, endT: END_T, config: cfg, profile: prof, svHealth, reports: reports.filter(r => r.tSent >= START_T - EPS) }
 }
 
 export function valueText(frame) {
@@ -634,7 +818,7 @@ function judge(cfg, events, frames) {
     notes.push({ level: 'warn', text: `${e.kind === 'svSync' ? 'Time-sync' : 'SV'} alarm, ${e.dev}: ${when}.` })
   }
   for (const e of events.filter(x => x.kind === 'ptp')) notes.push({ level: 'info', text: `Time sync, ${fmtTime(e.t)}: ${e.text}.` })
-  const prpAlarms = events.filter(e => e.kind === 'prpLan')
+  const prpAlarms = events.filter(e => e.kind === 'prpLan' && e.net !== 'station')
   for (const e of prpAlarms) {
     const when = e.t <= START_T + 1e-9 ? 'standing since before the run' : `at ${fmtTime(e.t)}`
     notes.push({ level: 'warn', text: `PRP alarm, ${e.dev}: LAN ${e.lan} silent, ${when}.` })
@@ -654,6 +838,31 @@ function judge(cfg, events, frames) {
     : relay?.mode !== 'on' ? `: ${tripSub.ied}'s subscription stayed healthy. Only ${relay.id}'s mode, on its display and the HMI, showed it` : ''
   if (silent && !stuckEv) notes.push({ level: 'bad', text: `No alarm warned of it${why}.` })
   return out
+}
+
+// What SCADA learned about the trip, over MMS
+function mmsNotes(cfg, events, reports, out) {
+  if (!(cfg.rcbs ?? []).length || !out.relay) return
+  const tripEv = events.find(e => e.kind === 'trip' && e.dev === out.relay)
+  const rcb = cfg.rcbs.find(r => r.ied === out.relay)
+  const notes = out.notes
+  for (const e of events.filter(x => x.kind === 'mmsLost')) {
+    const when = e.t <= START_T + 1e-9 ? 'standing since before the run' : `at ${fmtTime(e.t)}`
+    notes.push({ level: 'warn', text: `Alarm, ${e.dev}: association with ${e.ied} lost, ${when}.` })
+  }
+  for (const e of events.filter(x => x.kind === 'prpLan' && x.net === 'station')) {
+    const text = `PRP alarm, ${e.dev} on the station bus: LAN ${e.lan} silent, ${e.t <= START_T + 1e-9 ? 'standing since before the run' : `at ${fmtTime(e.t)}`}.`
+    if (!notes.some(n => n.text === text)) notes.push({ level: 'warn', text })
+  }
+  if (!tripEv || !rcb) return
+  const rep = reports.find(r => r.ied === out.relay && r.signal === 'trip' && r.value === true && r.tEvent >= tripEv.t - 1e-9)
+  out.scadaT = rep?.tRx ?? null
+  if (!rep) return
+  if (rep.fate === 'onTime') notes.push({ level: 'info', text: `SCADA: ${out.relay}'s trip reported at ${fmtTime(rep.tRx)}, ${fmtDur(rep.tRx - tripEv.t)} after the trip (MMS report). Protection never waits for it.` })
+  else if (rep.fate === 'tcp' && rep.tRx !== null) notes.push({ level: 'warn', text: `SCADA: ${out.relay}'s trip reached the gateway at ${fmtTime(rep.tRx)}, by TCP retransmission once the station bus was back: ${fmtDur(rep.tRx - tripEv.t)} late, with its original time stamp.` })
+  else if (rep.fate === 'buffer' && rep.tRx !== null) notes.push({ level: 'warn', text: `SCADA: ${out.relay}'s trip reached the gateway at ${fmtTime(rep.tRx)}, from the buffered report after the association came back: late, but with its original time stamp (${fmtTime(rep.tEvent)}). Nothing lost.` })
+  else if (rep.fate === 'lost') notes.push({ level: 'bad', text: `SCADA never received ${out.relay}'s trip: ${rep.reason}. The general interrogation after reconnecting shows only the state now, so the trip is missing from SCADA's event list.` })
+  else notes.push({ level: 'warn', text: `SCADA had not received ${out.relay}'s trip by the end of the run: ${rep.fate === 'buffer' ? 'it waits in the report buffer for the association to return' : 'TCP is still retransmitting'}.` })
 }
 
 // Outcome for a relay that trips several breakers (bus differential)

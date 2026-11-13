@@ -4,7 +4,7 @@
 // { id, track, title, zoom: 'trip' | 'bf' | 'heartbeats', setup?(cfg), scenario,
 //   intro, watch[], tryIt[], takeaway, expect: { verdict } }
 
-export const TRACKS = ['GOOSE basics', 'Test mode', 'Two bays', 'Redundancy', 'Sampled Values', 'Transformer and bus', 'Time sync']
+export const TRACKS = ['GOOSE basics', 'Test mode', 'Two bays', 'Redundancy', 'Sampled Values', 'Transformer and bus', 'Time sync', 'Station bus']
 
 export const LESSONS = [
   {
@@ -359,5 +359,85 @@ export const LESSONS = [
     ],
     takeaway: 'A grandmaster failover that takes longer than the merging units can hold their time leaves every differential blind for the gap. How fast the backup takes over, and how long the merging units hold, are protection requirements, not just network settings.',
     expect: { verdict: 'clearedLate' },
+  },
+  {
+    id: 'mms-report',
+    track: 'Station bus',
+    title: 'SCADA hears it second',
+    zoom: 'trip',
+    setup: cfg => { cfg.features.mms = true },
+    scenario: {},
+    intro: 'The gateway on the station bus is how SCADA sees the station. It is an MMS client of every relay: it holds an association with each and has enabled a report in it. When a value in the report changes, the relay sends the change to the gateway on its own, without being asked.',
+    watch: [
+      '21-AB trips at 16.7 ms and 52-AB energizes its trip coil at 18.7 ms, over GOOSE on the process bus, exactly as without MMS.',
+      'The report of the trip leaves 21-AB 5 ms after the trip (illustrative) and reaches the gateway at 21.7 ms, after the breaker IED already has the trip. It carries the relay’s own time stamp, 16.7 ms, not the time it arrived.',
+      'Each change is a report of its own: the breaker moving at 35.7 ms (received at 40.8 ms), open at 59.1 ms (received at 64.1 ms), and the trip resetting at 68.7 ms. The SCADA view shows what the gateway believes at each moment, next to what is actually true.',
+    ],
+    tryIt: [
+      'Tap the station-bus switch SB and make it fail for the whole run: the trip and the breaker are exactly as before. The gateway has had no association with 21-AB since before the run (a standing alarm), and SCADA knows nothing of the fault.',
+      'Switch to the Heartbeats view: no report in the quiet period, because nothing changes. A report is driven by changes, unlike GOOSE’s heartbeat.',
+    ],
+    takeaway: 'MMS is the operator’s view, not the trip path. A station-bus failure blinds SCADA but leaves protection untouched, which is why trips and interlocks go over GOOSE and never wait for a client/server exchange.',
+    expect: { verdict: 'delivered' },
+  },
+  {
+    id: 'mms-buffered',
+    track: 'Station bus',
+    title: 'The station bus drops: SCADA catches up',
+    zoom: 'heartbeats',
+    setup: cfg => { cfg.features.mms = true },
+    scenario: { linkDown: { L3: 0 }, linkUp: { L3: 1.5 } },
+    intro: 'Link L3, between 21-AB’s station port and the station-bus switch, fails at the moment of the fault and comes back 1.5 s later.',
+    watch: [
+      'Protection doesn’t notice: 52-AB opens at 52.0 ms.',
+      'The trip report can’t get through, and TCP keeps resending it. At 1.000 s the gateway has had no answer from 21-AB for 1 s (illustrative): it declares the association lost, raises an alarm, and marks 21-AB’s data in SCADA as not current.',
+      'L3 is back at 1.5 s and the gateway re-establishes the association at 1.800 s. The report is buffered, so 21-AB still holds the four changes and sends them, each with its original time stamp: the trip at 16.7 ms arrives 1.783 s late, but complete and in order. Then the gateway reads every value again (general interrogation).',
+    ],
+    tryIt: [
+      'Tap L3 and make it fail at the fault without coming back: the changes wait in the buffer until the end of the run.',
+      'Tap 21-AB and set its report to “Engineered unbuffered”: see the next lesson.',
+    ],
+    takeaway: 'A buffered report is how SCADA keeps a complete event list through a communication outage: late, but with the relay’s own time stamps. The association alarm is what tells the operator that the screen is not current.',
+    expect: { verdict: 'delivered' },
+  },
+  {
+    id: 'mms-unbuffered',
+    track: 'Station bus',
+    title: 'Unbuffered: the trip SCADA never saw',
+    zoom: 'heartbeats',
+    setup: cfg => { cfg.features.mms = true },
+    scenario: { linkDown: { L3: 0 }, linkUp: { L3: 1.5 }, rcbUnbuffered: ['21-AB.Events'] },
+    intro: 'The same outage, but 21-AB’s report was engineered as an unbuffered report (URCB) instead of a buffered one. Nothing else is different.',
+    watch: [
+      'Protection is unaffected again: 52-AB opens at 52.0 ms.',
+      'At 1.000 s the association is lost, and the four reports still waiting in TCP are lost with it. An unbuffered report keeps nothing for a client that isn’t connected.',
+      'At 1.800 s the gateway reconnects and reads the current values: trip off, breaker open. SCADA shows a breaker that opened by itself; the trip that opened it never reaches the event list.',
+    ],
+    tryIt: [
+      'Set the report back to buffered and compare the SCADA view at the end of the run.',
+      'With the report unbuffered, make L3 fail 2 s before the fault instead: the association is down before anything happens, and no change during the fault is ever reported.',
+    ],
+    takeaway: 'Buffered or unbuffered is a line in the configuration (the report control block in the SCD and CID), invisible until an outage. Events that someone will investigate later, trips above all, belong in buffered reports.',
+    expect: { verdict: 'delivered' },
+  },
+  {
+    id: 'mms-prp',
+    track: 'Station bus',
+    title: 'PRP on the station bus',
+    zoom: 'heartbeats',
+    setup: cfg => { cfg.features.mms = true; cfg.features.redundancy = true },
+    scenario: { linkDown: { L3A: 0 } },
+    intro: 'With PRP, the station bus is doubled as well: LAN A (SBA) and LAN B (SBB), with the gateway and each relay’s station port on both. 21-AB’s LAN A station link fails at the fault.',
+    watch: [
+      'The reports reach the gateway over LAN B at 21.7 ms, as if nothing had happened: no TCP resend, no lost association.',
+      'There is no GOOSE on the station bus to show a silent LAN. PRP nodes also send their own supervision frames, and at 2.000 s 21-AB’s station port and the gateway each raise a PRP alarm for LAN A.',
+      '21-AB shows two PRP states: the process bus (both LANs fine) and the station bus (LAN A lost). They are separate networks with separate alarms.',
+    ],
+    tryIt: [
+      'Tap the station-bus switch SBA and make it fail at the fault: every station-bus node alarms for LAN A, and SCADA still misses nothing.',
+      'Also make SBB fail at the fault: now both LANs are down, and the gateway loses its associations at 1.000 s, as in the single-network lessons.',
+    ],
+    takeaway: 'Station-bus PRP keeps SCADA’s view intact through a single network failure, the same way process-bus PRP keeps trips intact. The cost of losing a LAN is only visible in the PRP alarms.',
+    expect: { verdict: 'delivered' },
   },
 ]

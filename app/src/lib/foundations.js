@@ -118,7 +118,7 @@ export const CHAPTERS = [
       'IEC 61850 has a message type for each. {{MMS}} takes over the RTU’s job. It is {{client/server}}: a client (the gateway or HMI) asks a server (an IED) for values, sets up {{reports}} that the IED sends when values change, and operates breakers with {{select-before-operate}} controls. It runs over TCP/IP (A5), and an answer within a second or so is fine.',
       '{{GOOSE}} takes over the trip, block and status wiring between IEDs. It is publish/subscribe (A3): the publisher multicasts a message whenever a value changes and keeps repeating it, and every IED configured to listen acts on it, within a few milliseconds.',
       '{{Sampled Values}} take over the CT and VT secondary wiring. A {{merging unit}} in the yard has the CT and VT secondaries wired into it, measures the currents and voltages, and publishes a continuous stream of samples, typically 80 per cycle: 4800 messages a second at 60 Hz, from every merging unit, all the time. The relays subscribe to the streams they need. A bus VT shared by several bays usually gets a merging unit and a stream of its own.',
-      'This module and the bay simulator concentrate on GOOSE. Sampled Values get their own simulator slice later; MMS appears where SCADA meets the station.',
+      'This module concentrates on GOOSE. In the bay simulator, ⚙ Sampled Values adds the measurement streams and ⚙ MMS reports adds the gateway’s side: each relay reporting its trip and breaker position, and what SCADA sees when the station bus fails.',
     ],
     figure: 'kinds',
     key: 'MMS is the SCADA conversation, GOOSE is the trip wiring, Sampled Values are the CT and VT wiring. Each has its own pattern, speed and place in the network.',

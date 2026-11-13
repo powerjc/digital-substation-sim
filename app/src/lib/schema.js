@@ -6,7 +6,7 @@
 // Units: protection-relevant times in cycles (as the Line Protection
 // Simulator); communication times in ms; network in Mbit/s and µs.
 
-export const SCHEMA_VERSION = 8
+export const SCHEMA_VERSION = 9
 
 // Retransmission profiles. IEC 61850-8-1 leaves the curve to the
 // implementation; these are illustrative. Each frame's timeAllowedtoLive is
@@ -56,13 +56,18 @@ export function defaultConfig() {
     // unit keeps its sync muHoldoverS after losing the grandmaster; a grandmaster
     // stays within spec gmHoldoverS after losing GPS.
     ptp: { failoverS: 3, muHoldoverS: 2, gmHoldoverS: 100 },
+    // MMS (feature mms), all illustrative: a relay's report leaves serverMs after
+    // the data changed; the gateway declares an association lost after
+    // assocTimeoutS without an answer and re-establishes it reconnectS after the
+    // path returns.
+    mms: { serverMs: 5, assocTimeoutS: 1, reconnectS: 0.3 },
 
     ieds: [
       { id: '21-AB', kind: 'relay', bay: 'AB', line: 'AB', name: 'LineProtAB', label: 'Line relay',
         mac: '02-00-00-AB-00-21', mode: 'on', lphdSim: false },
       { id: '52-AB', kind: 'breaker', bay: 'AB', name: 'BkrCtlAB', label: 'Breaker IED (PIU)',
         mac: '02-00-00-AB-00-52', mode: 'on', lphdSim: false },
-      // Station level: MMS to SCADA (not simulated yet)
+      // Station level: MMS client of every relay (feature mms), gateway to SCADA
       { id: 'GW', kind: 'hmi', name: 'Gateway', label: 'Gateway / HMI', mac: '02-00-00-00-00-99', mode: 'on', lphdSim: false },
     ],
     // Station bus (VLAN 20): relays' station ports and the gateway.
@@ -106,12 +111,14 @@ export function defaultConfig() {
       { id: '21-AB.Pos', ied: '21-AB', gocb: 'AB.Pos', use: 'breakerPos',
         expect: { mac: '01-0C-CD-01-00-02', appid: 0x0102, gocbRef: 'BkrCtlABCTRL/LLN0$GO$Pos', datSet: 'BkrCtlABCTRL/LLN0$DS_Pos', confRev: 1 } },
     ],
-    features: { networkDetail: false, testMode: false, secondBay: false, redundancy: false, sampledValues: false, transformerBay: false, timeSync: false },
+    features: { networkDetail: false, testMode: false, secondBay: false, redundancy: false, sampledValues: false, transformerBay: false, timeSync: false, mms: false },
   }
 }
 
 // One step per schema version.
 const MIGRATIONS = {
+  // v8 → v9: MMS on the station bus
+  8: cfg => ({ ...cfg, version: 9, mms: cfg.mms ?? { serverMs: 5, assocTimeoutS: 1, reconnectS: 0.3 }, features: { mms: false, ...cfg.features } }),
   // v7 → v8: time sync feature and PTP figures
   7: cfg => ({ ...cfg, version: 8, ptp: cfg.ptp ?? { failoverS: 3, muHoldoverS: 2, gmHoldoverS: 100 }, features: { timeSync: false, ...cfg.features } }),
   // v6 → v7: transformer bay and bus differential feature

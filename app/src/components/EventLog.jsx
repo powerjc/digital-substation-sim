@@ -31,6 +31,12 @@ const KIND_STYLE = {
   prpLan: 'text-orange-700 font-bold',
   testset: 'text-purple-700 font-semibold',
   simLock: 'text-purple-700 font-semibold',
+  report: 'text-violet-700',
+  mmsLost: 'text-red-700 font-bold',
+  mmsOk: 'text-green-700',
+  mmsDrop: 'text-red-700 font-semibold',
+  gi: 'text-violet-700',
+  prpOk: 'text-green-700',
 }
 
 export default function EventLog({ events, eventIdx, onSelect, window: win }) {

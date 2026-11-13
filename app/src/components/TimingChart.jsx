@@ -30,6 +30,7 @@ function segments(events, t0, endT, valueFn) {
 }
 
 function buildRows(config, simCfg) {
+  const sbPrp = config.switches.some(s => s.lan && s.prpSupervision === 'frames')
   const rows = [{ key: 'fault', label: 'FAULT', type: 'digital', color: '#dc2626', fn: s => s.fault, group: null }]
   if (config.ieds.some(d => d.kind === 'gm')) rows.push({ key: 'gm', label: 'Grandmaster', type: 'gm', group: null })
   for (const d of config.ieds) {
@@ -44,8 +45,14 @@ function buildRows(config, simCfg) {
     const subRows = subs.map(s => ({ key: `sub-${s.id}`, label: `Sub ${config.gocbs.find(x => x.id === s.gocb).label}`, type: 'status', sub: s.id, group: g }))
     for (const s of (config.svSubs ?? []).filter(x => x.ied === d.id)) subRows.unshift({ key: `sv-${s.id}`, label: 'Sub SV', type: 'status', sub: s.id, sv: true, group: g })
     const pubRows = pubs.map(x => ({ key: `gocb-${x.id}`, label: `${x.label} GOOSE`, type: 'frames', gocb: x.id, color, group: g }))
-    const prpRow = config.switches.some(s => s.lan) && d.kind !== 'testset'
-      ? [{ key: `${g}-prp`, label: 'PRP LANs', type: 'prp', ied: g, group: g }] : []
+    const prpRow = config.switches.some(s => s.lan && !s.prpSupervision) && d.kind !== 'testset'
+      ? [{ key: `${g}-prp`, label: sbPrp ? 'PRP process' : 'PRP LANs', type: 'prp', ied: g, group: g }] : []
+    // MMS: the relay's report to the gateway, and its station-bus PRP port
+    const rcb = (config.rcbs ?? []).find(r => r.ied === d.id)
+    if (rcb) {
+      prpRow.push({ key: `${g}-mms`, label: 'MMS report', type: 'mms', ied: g, group: g })
+      if (sbPrp) prpRow.push({ key: `${g}-prpS`, label: 'PRP station', type: 'prp', ied: `${g}@S`, group: g })
+    }
     if (d.kind === 'relay') {
       rows.push({ key: `${g}-trip`, label: 'PTRC trip', type: 'digital', color, fn: s => s.ieds[g].trip, group: g })
       if (d.bf) rows.push({ key: `${g}-bf`, label: 'BF trip', type: 'digital', color: '#ea580c', fn: s => !!s.ieds[g].bf, group: g })
@@ -58,6 +65,8 @@ function buildRows(config, simCfg) {
       rows.push(...pubRows)
     }
   }
+  const gw = config.ieds.find(d => d.kind === 'hmi')
+  if (gw && sbPrp) rows.push({ key: 'gw-prp', label: 'PRP station', type: 'prp', ied: gw.id, group: gw.id })
   return rows
 }
 
@@ -199,6 +208,38 @@ export default function TimingChart({ config, run, selectedFrame, onSelectFrame,
                 </g>
               )
             }
+            if (r.type === 'mms') {
+              // Association band, and a tick per report: sent (violet), received (dot), lost (red ×)
+              const segs = segments(events, t0, t1, s => s.mms?.[r.ied]?.assoc ?? 'up').filter(s => s.t0 <= now).map(s => ({ ...s, t1: Math.min(s.t1, now) }))
+              const reps = (sim.reports ?? []).filter(x => x.ied === r.ied && x.tSent >= t0 && x.tSent <= Math.min(t1, now + 1e-9))
+              const COL = { up: '#16a34a', connecting: '#d97706', lost: '#dc2626' }
+              return (
+                <g key={r.key}>
+                  {label}
+                  {segs.map((s, i) => {
+                    const ok = s.v === 'up', w = Math.max(0, tx(s.t1) - tx(s.t0))
+                    return (
+                      <g key={i}>
+                        <rect x={tx(s.t0)} y={ok ? lo - 3 : hi} width={w} height={ok ? 3 : lo - hi} fill={COL[s.v]} fillOpacity={ok ? 0.5 : 0.2} />
+                        {!ok && w > 60 && <text x={tx(s.t0) + 4} y={lo - 2} fontSize={9} fontWeight="700" fill={COL[s.v]}>{s.v === 'lost' ? 'ASSOC LOST' : 'reconnecting'}</text>}
+                      </g>
+                    )
+                  })}
+                  {reps.map(x => {
+                    const xs = tx(x.tSent)
+                    if (x.fate === 'lost') return <g key={x.no} stroke="#dc2626" strokeWidth={1.5}><line x1={xs - 3} y1={hi} x2={xs + 3} y2={lo} /><line x1={xs - 3} y1={lo} x2={xs + 3} y2={hi} /></g>
+                    const xr = x.tRx !== null && x.tRx <= now + 1e-9 && x.tRx <= t1 ? tx(x.tRx) : null
+                    return (
+                      <g key={x.no}>
+                        <line x1={xs} y1={hi} x2={xs} y2={lo} stroke="#7c3aed" strokeWidth={1.5} />
+                        {xr !== null && Math.abs(xr - xs) > 3 && <line x1={xs} y1={(hi + lo) / 2} x2={xr} y2={(hi + lo) / 2} stroke="#7c3aed" strokeWidth={1} strokeDasharray="2 2" />}
+                        {xr !== null && <circle cx={xr} cy={(hi + lo) / 2} r={2.5} fill="#7c3aed" />}
+                      </g>
+                    )
+                  })}
+                </g>
+              )
+            }
             if (r.type === 'status') {
               const segs = segments(events, t0, t1, s => (r.sv ? s.sv?.[r.sub]?.status ?? 'healthy' : s.subs[r.sub]?.status ?? 'none')).filter(s => s.t0 <= now).map(s => ({ ...s, t1: Math.min(s.t1, now) }))
               return (
@@ -253,6 +294,7 @@ export default function TimingChart({ config, run, selectedFrame, onSelectFrame,
         Frame ticks: <span style={{ color: FATE.new.color }}>■</span> new state accepted · <span style={{ color: FATE.repeat.color }}>■</span> repeat ·{' '}
         <span style={{ color: FATE.ignored.color }}>■</span> ignored · <span style={{ color: FATE.rejected.color }}>■</span> rejected ·{' '}
         <span style={{ color: FATE.lost.color }}>■</span> lost. Labels are stNum/sqNum. Tap a tick to decode it; tap elsewhere to jump in time.
+        {(config.rcbs ?? []).length > 0 && <> MMS: <span style={{ color: '#7c3aed' }}>|</span> report sent, <span style={{ color: '#7c3aed' }}>●</span> received by the gateway, <span style={{ color: '#dc2626' }}>×</span> never reported.</>}
       </p>
     </div>
   )

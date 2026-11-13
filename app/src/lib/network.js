@@ -52,11 +52,13 @@ function downstreamIeds(topo, dev, viaLink, seen = new Set()) {
 
 const linkIsDown = (scenario, linkId, t) => {
   const d = scenario.linkDown?.[linkId]
-  return d !== undefined && d !== null && t >= d - 1e-12
+  const u = scenario.linkUp?.[linkId]
+  return d !== undefined && d !== null && t >= d - 1e-12 && !(Number.isFinite(u) && t >= u - 1e-12)
 }
 const switchIsDown = (scenario, sw, t) => {
   const d = scenario.switchDown?.[sw]
-  return d !== undefined && d !== null && t >= d - 1e-12
+  const u = scenario.switchUp?.[sw]
+  return d !== undefined && d !== null && t >= d - 1e-12 && !(Number.isFinite(u) && t >= u - 1e-12)
 }
 
 const dropped = (scenario, linkId, frame) =>

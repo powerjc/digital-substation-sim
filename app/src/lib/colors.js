@@ -17,6 +17,8 @@ export const DEVICE_COLOR = {
   GM2: '#15803d',
   PBA: '#0369a1',     // LAN A
   PBB: '#b45309',     // LAN B
+  SBA: '#0369a1',
+  SBB: '#b45309',
   '21-AX': '#ca8a04', // yellow (as in the Line Protection Simulator)
   '52-AX': '#0d9488', // teal
 }

@@ -21,30 +21,56 @@ const bfEntries = [
 ]
 
 // With redundancy on, the process bus becomes two independent networks (PRP,
-// IEC 62439-3): LAN A (PBA) and LAN B (PBB). Every device with a process-bus
-// port gets one on each (relay port P → P.A and P.B; breaker IED → A and B,
-// same MAC on both, as PRP does). The test set stays single-attached (LAN A).
-function applyPRP(c) {
-  const pb = c.switches.find(s => s.id === 'PB')
-  c.switches = c.switches.filter(s => s.id !== 'PB')
+// IEC 62439-3): LAN A (PBA) and LAN B (PBB). Every device with a port on it
+// gets one on each (relay port P → P.A and P.B; breaker IED → A and B, same MAC
+// on both, as PRP does). The test set stays single-attached (LAN A). With MMS
+// on, the station bus is split the same way (SBA / SBB; relay port S → S.A, S.B).
+// The station bus carries no GOOSE, so its nodes supervise each LAN from PRP
+// supervision frames (prpSupervision: 'frames'); process-bus nodes hear GOOSE.
+function applyPRP(c, bus = 'PB') {
+  const sw0 = c.switches.find(s => s.id === bus)
+  if (!sw0) return c
+  c.switches = c.switches.filter(s => s.id !== bus)
   c.switches.push(
-    { ...structuredClone(pb), id: 'PBA', label: 'Process bus, LAN A', lan: 'A' },
-    { ...structuredClone(pb), id: 'PBB', label: 'Process bus, LAN B', lan: 'B' },
+    { ...structuredClone(sw0), id: `${bus}A`, label: `${sw0.label}, LAN A`, lan: 'A', ...(bus === 'SB' ? { prpSupervision: 'frames' } : {}) },
+    { ...structuredClone(sw0), id: `${bus}B`, label: `${sw0.label}, LAN B`, lan: 'B', ...(bus === 'SB' ? { prpSupervision: 'frames' } : {}) },
   )
   const out = []
   for (const l of c.links) {
     const [a, b] = [l.a, l.b]
-    const pbEnd = [a, b].find(e => e.startsWith('PB:'))
-    if (!pbEnd) { out.push(l); continue }
-    const other = pbEnd === a ? b : a
-    const port = pbEnd.split(':')[1]
-    if (other.startsWith('TS')) { out.push({ ...l, a: other, b: `PBA:${port}` }); continue }
+    const end = [a, b].find(e => e.startsWith(`${bus}:`))
+    if (!end) { out.push(l); continue }
+    const other = end === a ? b : a
+    const port = end.split(':')[1]
+    if (other.startsWith('TS')) { out.push({ ...l, a: other, b: `${bus}A:${port}` }); continue }
     for (const lan of ['A', 'B']) {
-      const end = other.includes(':') ? `${other}.${lan}` : `${other}:${lan}`
-      out.push({ id: `${l.id}${lan}`, a: end, b: `PB${lan}:${port}` })
+      const e2 = other.includes(':') ? `${other}.${lan}` : `${other}:${lan}`
+      out.push({ id: `${l.id}${lan}`, a: e2, b: `${bus}${lan}:${port}` })
     }
   }
   c.links = out
+  return c
+}
+
+// MMS (feature mms): every relay with a station-bus port has a report control
+// block for the gateway: its trip, breaker failure and the breaker position it
+// sees (CSWI, fed by the breaker IED's Position GOOSE). Buffered (BRCB) as
+// engineered; a scenario can make one unbuffered (URCB).
+function addReports(c) {
+  const client = c.ieds.find(d => d.kind === 'hmi')
+  if (!client) return c
+  c.rcbs = []
+  for (const r of c.ieds.filter(d => d.kind === 'relay')) {
+    if (!c.links.some(l => [l.a, l.b].includes(`${r.id}:S`))) continue
+    const items = [{ ref: 'PROT/PTRC1.Tr.general', signal: 'trip', label: 'Trip' }]
+    if (r.bf) items.push({ ref: 'PROT/RBRF1.OpEx.general', signal: 'bf', label: 'BF trip' })
+    if (c.subscriptions.some(s => s.ied === r.id && s.use === 'breakerPos')) items.push({ ref: 'CTRL/CSWI1.Pos.stVal', signal: 'pos', label: 'Breaker' })
+    c.rcbs.push({
+      id: `${r.id}.Events`, ied: r.id, client: client.id, port: 'S', buffered: true,
+      rptID: `${r.name}PROT/LLN0$BR$Events01`, datSet: `${r.name}PROT/LLN0$DS_Events`,
+      trgOps: ['dchg', 'gi'], items,
+    })
+  }
   return c
 }
 
@@ -178,9 +204,13 @@ export function stationConfig(config00) {
   if (isActive(config, 'transformerBay')) base = addTransformerBay(base === config ? structuredClone(config) : base)
   if (isActive(config, 'sampledValues')) base = addMergingUnits(base === config ? structuredClone(config) : base)
   if (isActive(config, 'timeSync')) base = addGrandmasters(base === config ? structuredClone(config) : base)
+  if (isActive(config, 'mms')) base = addReports(base === config ? structuredClone(config) : base)
   if (!isActive(config, 'redundancy')) return base
   const c = base === config ? structuredClone(config) : base
-  return config.network?.redundancy === 'rstp' ? applyRSTP(c) : applyPRP(c)
+  if (config.network?.redundancy === 'rstp') return applyRSTP(c)
+  applyPRP(c, 'PB')
+  // Station-bus PRP only matters once something talks on the station bus (MMS)
+  return isActive(config, 'mms') ? applyPRP(c, 'SB') : c
 }
 
 function buildStation(config) {

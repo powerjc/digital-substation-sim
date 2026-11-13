@@ -19,14 +19,14 @@ const ms = s => Math.round(s * 1e5) / 100 // s → ms, 2 decimals
 const tripFrames = r => r.frames.filter(f => f.gocb === 'AB.Trip')
 
 describe('schema', () => {
-  it('is at v8 and migrates a current config unchanged', () => {
+  it('is at v9 and migrates a current config unchanged', () => {
     const c = defaultConfig()
     expect(c.version).toBe(SCHEMA_VERSION)
-    expect(SCHEMA_VERSION).toBe(8)
+    expect(SCHEMA_VERSION).toBe(9)
     expect(migrateConfig(c)).toEqual(c)
     expect(migrateConfig(null)).toEqual(defaultConfig())
   })
-  it('migrates a v1 config to v8: features, script, BF timer, station / process bus, PRP, RSTP, SV, transformer bay, PTP', () => {
+  it('migrates a v1 config to v9: features, script, BF timer, station / process bus, PRP, RSTP, SV, transformer bay, PTP, MMS', () => {
     const v1 = defaultConfig()
     v1.version = 1
     delete v1.script
@@ -36,14 +36,15 @@ describe('schema', () => {
     v1.switches = [{ id: 'SW1', label: 'Bay switch', ports: { 1: { vlans: [10] }, 2: { vlans: [10] } } }]
     v1.links = [{ id: 'L1', a: '21-AB', b: 'SW1:1' }, { id: 'L2', a: 'SW1:2', b: '52-AB' }]
     const m = migrateConfig(v1)
-    expect(m.version).toBe(8)
+    expect(m.version).toBe(9)
+    expect(m.mms).toEqual({ serverMs: 5, assocTimeoutS: 1, reconnectS: 0.3 })
     expect(m.ptp).toEqual({ failoverS: 3, muHoldoverS: 2, gmHoldoverS: 100 })
     expect(m.timing.svLossMs).toBe(1)
     expect(m.network.redundancy).toBe('prp')
     expect(m.network.rstpRecoveryMs).toBe(50)
     expect(m.switches.map(x => x.id)).toEqual(['PB', 'SB'])
     expect(m.network.prpLifeCheckMs).toBe(2000)
-    expect(m.features).toEqual({ networkDetail: true, testMode: false, secondBay: false, redundancy: false, sampledValues: false, transformerBay: false, timeSync: false })
+    expect(m.features).toEqual({ networkDetail: true, testMode: false, secondBay: false, redundancy: false, sampledValues: false, transformerBay: false, timeSync: false, mms: false })
     expect(m.script).toEqual({ faultLine: 'AB' })
     expect(m.timing.bfCycles).toBe(8)
     expect(m.ieds.find(d => d.id === '21-AB').line).toBe('AB')
@@ -655,5 +656,137 @@ describe('time sync (PTP)', () => {
     expect(fmtProt(simulate(st('BUSA', ['redundancy']), { switchDown: { PBA: 0 } }).outcome.tripT, 60)).toBe('16.7 ms (1.0 cyc)')
     const c = defaultConfig(); c.features.transformerBay = true; c.features.timeSync = true; c.features.redundancy = true; c.network.redundancy = 'rstp'; c.script.faultLine = 'BUSA'
     expect(simulate(stationConfig(c), {}).outcome.verdict).toBe('delivered')
+  })
+})
+
+describe('MMS on the station bus (feature mms)', () => {
+  const st = (feat = [], net = {}) => {
+    const c = defaultConfig()
+    c.features.mms = true
+    for (const f of feat) c.features[f] = true
+    Object.assign(c.network, net)
+    return stationConfig(c)
+  }
+  const tripRep = r => r.reports.find(x => x.ied === '21-AB' && x.signal === 'trip' && x.value === true)
+  it('adds a buffered report per relay, for the gateway', () => {
+    const s = st(['transformerBay'])
+    expect(s.rcbs.map(r => r.ied)).toEqual(['21-AB', '21-AX', '87-AT', '87B-A'])
+    expect(s.rcbs.every(r => r.buffered && r.client === 'GW')).toBe(true)
+    expect(s.rcbs.find(r => r.ied === '21-AB').items.map(i => i.signal)).toEqual(['trip', 'bf', 'pos'])
+    expect(s.rcbs.find(r => r.ied === '87B-A').items.map(i => i.signal)).toEqual(['trip'])
+  })
+  it('leaves protection alone: same transfer time; SCADA has the trip at 21.7 ms, 5.04 ms after it', () => {
+    const r = simulate(st(), {})
+    expect(ms(r.outcome.transferT)).toBe(ms(run().outcome.transferT))
+    expect(fmtTime(tripRep(r).tRx)).toBe('21.7 ms')
+    expect(fmtDur(tripRep(r).tRx - r.outcome.tripT)).toBe('5.04 ms')
+    expect(r.reports.filter(x => x.ied === '21-AB').map(x => `${x.signal}=${x.value}`)).toEqual(['trip=true', 'pos=intermediate', 'pos=off', 'trip=false'])
+    expect(r.events.at(-1).state.scada['21-AB']).toMatchObject({ trip: false, pos: 'off', stale: false })
+  })
+  it('station-bus link out 0–1.5 s: association lost at 1.000 s, back at 1.800 s, the buffered trip arrives then with its time stamp', () => {
+    const r = simulate(st(), { linkDown: { L3: 0 }, linkUp: { L3: 1.5 } })
+    expect(r.outcome.verdict).toBe('delivered')
+    expect(fmtTime(ev(r, 'mmsLost').t)).toBe('1.000 s')
+    expect(fmtTime(ev(r, 'mmsOk').t)).toBe('1.800 s')
+    expect(tripRep(r).fate).toBe('buffer')
+    expect(fmtTime(tripRep(r).tRx)).toBe('1.800 s')
+    expect(fmtTime(tripRep(r).tEvent)).toBe('16.7 ms')
+    expect(r.outcome.notes.some(n => /from the buffered report/.test(n.text))).toBe(true)
+  })
+  it('the same outage with an unbuffered report: the trip never reaches SCADA; GI shows trip off, breaker open', () => {
+    const r = simulate(st(), { linkDown: { L3: 0 }, linkUp: { L3: 1.5 }, rcbUnbuffered: ['21-AB.Events'] })
+    expect(tripRep(r).fate).toBe('lost')
+    expect(tripRep(r).tRx).toBe(null)
+    expect(ev(r, 'gi').text).toMatch(/Trip false, Breaker open/)
+    expect(r.outcome.notes.find(n => n.level === 'bad').text).toMatch(/SCADA never received 21-AB's trip/)
+  })
+  it('a 0.5 s outage, shorter than the timeout: TCP delivers the trip at 500.0 ms, no association alarm', () => {
+    const r = simulate(st(), { linkDown: { L3: 0 }, linkUp: { L3: 0.5 } })
+    expect(ev(r, 'mmsLost')).toBeUndefined()
+    expect(tripRep(r).fate).toBe('tcp')
+    expect(fmtTime(tripRep(r).tRx)).toBe('500.0 ms')
+  })
+  it('station bus down for the whole run: protection unaffected, standing association alarm, trip waits in the buffer', () => {
+    const r = simulate(st(), { switchDown: { SB: -Infinity } })
+    expect(r.outcome.verdict).toBe('delivered')
+    expect(ev(r, 'mmsLost').t).toBe(START_T)
+    expect(tripRep(r).fate).toBe('buffer')
+  })
+  it('PRP doubles the station bus only with MMS on', () => {
+    expect(st(['redundancy']).switches.map(x => x.id)).toEqual(['PBA', 'PBB', 'SBA', 'SBB'])
+    const c = defaultConfig(); c.features.redundancy = true
+    expect(stationConfig(c).switches.map(x => x.id)).toEqual(['SB', 'PBA', 'PBB'])
+    expect(st(['redundancy'], { redundancy: 'rstp' }).switches.map(x => x.id)).toEqual(['SB', 'PB1', 'PB2'])
+  })
+  it('station-bus PRP: LAN A link of 21-AB fails at the fault, reports on time, PRP alarms from supervision frames at 2.000 s', () => {
+    const r = simulate(st(['redundancy']), { linkDown: { L3A: 0 } })
+    expect(fmtTime(tripRep(r).tRx)).toBe('21.7 ms')
+    expect(ev(r, 'mmsLost')).toBeUndefined()
+    const al = r.events.filter(e => e.kind === 'prpLan' && e.net === 'station')
+    expect(al.map(e => `${e.dev} ${e.lan} ${fmtTime(e.t)}`)).toEqual(['21-AB A 2.000 s', 'GW A 2.000 s'])
+    expect(r.events.at(-1).state.prp['21-AB@S']).toEqual({ A: 'lost', B: 'ok' })
+    expect(r.events.at(-1).state.prp['21-AB']).toEqual({ A: 'ok', B: 'ok' })
+  })
+})
+
+describe('lesson figures: station bus (MMS)', () => {
+  const lesson = id => { const l = LESSONS.find(x => x.id === id); const c = defaultConfig(); l.setup?.(c); return simulate(stationConfig(c), l.scenario) }
+  const rx = (r, sig, v) => r.reports.find(x => x.ied === '21-AB' && x.signal === sig && x.value === v)
+  it('SCADA hears it second: coil 18.7 ms, report 21.7 ms stamped 16.7 ms; 35.7 → 40.8, 59.1 → 64.1, reset 68.7 ms', () => {
+    const r = lesson('mms-report')
+    expect(fmtTime(r.outcome.coilT)).toBe('18.7 ms')
+    expect(fmtTime(rx(r, 'trip', true).tRx)).toBe('21.7 ms')
+    expect(fmtTime(rx(r, 'trip', true).tEvent)).toBe('16.7 ms')
+    expect(fmtTime(rx(r, 'pos', 'intermediate').tEvent)).toBe('35.7 ms')
+    expect(fmtTime(rx(r, 'pos', 'intermediate').tRx)).toBe('40.8 ms')
+    expect(fmtTime(rx(r, 'pos', 'off').tEvent)).toBe('59.1 ms')
+    expect(fmtTime(rx(r, 'pos', 'off').tRx)).toBe('64.1 ms')
+    expect(fmtTime(rx(r, 'trip', false).tEvent)).toBe('68.7 ms')
+    expect(r.reports.filter(x => x.tSent < 0)).toEqual([])
+  })
+  it('SCADA hears it second, try-this: SB down all run, same trip, standing association alarm', () => {
+    const c = defaultConfig(); c.features.mms = true
+    const r = simulate(stationConfig(c), { switchDown: { SB: -Infinity } })
+    expect(fmtTime(r.outcome.coilT)).toBe('18.7 ms')
+    expect(ev(r, 'mmsLost').t).toBe(START_T)
+  })
+  it('SCADA catches up: opens 52.0 ms, association lost 1.000 s, back 1.800 s, trip 1.783 s late, four entries', () => {
+    const r = lesson('mms-buffered')
+    expect(fmtProt(r.outcome.openT, 60)).toBe('52.0 ms (3.1 cyc)')
+    expect(fmtTime(ev(r, 'mmsLost').t)).toBe('1.000 s')
+    expect(fmtTime(ev(r, 'mmsOk').t)).toBe('1.800 s')
+    expect(fmtDur(rx(r, 'trip', true).tRx - rx(r, 'trip', true).tEvent)).toBe('1.783 s')
+    expect(r.reports.filter(x => x.fate === 'buffer' && x.tRx !== null)).toHaveLength(4)
+    expect(ev(r, 'gi').t).toBeGreaterThan(ev(r, 'mmsOk').t)
+  })
+  it('SCADA catches up, try-this: never back, the changes wait in the buffer', () => {
+    const c = defaultConfig(); c.features.mms = true
+    const r = simulate(stationConfig(c), { linkDown: { L3: 0 } })
+    expect(r.reports.filter(x => x.ied === '21-AB' && x.fate === 'buffer' && x.tRx === null)).toHaveLength(4)
+  })
+  it('Unbuffered: four reports lost at 1.000 s, GI at reconnect shows trip off, breaker open', () => {
+    const r = lesson('mms-unbuffered')
+    expect(fmtProt(r.outcome.openT, 60)).toBe('52.0 ms (3.1 cyc)')
+    expect(ev(r, 'mmsLost').text).toMatch(/4 unbuffered reports/)
+    expect(r.reports.filter(x => x.fate === 'lost')).toHaveLength(4)
+    expect(fmtTime(ev(r, 'gi').t)).toBe('1.800 s')
+    expect(ev(r, 'gi').text).toMatch(/Trip false, Breaker open/)
+  })
+  it('Unbuffered, try-this: down 2 s before, nothing during the fault is ever reported', () => {
+    const c = defaultConfig(); c.features.mms = true
+    const r = simulate(stationConfig(c), { linkDown: { L3: -2 }, rcbUnbuffered: ['21-AB.Events'] })
+    expect(r.reports.filter(x => x.ied === '21-AB' && x.tSent > 0).every(x => x.fate === 'lost')).toBe(true)
+  })
+  it('PRP on the station bus: report 21.7 ms over LAN B, PRP alarms 2.000 s; SBA fails: no loss; both fail: association lost 1.000 s', () => {
+    const r = lesson('mms-prp')
+    expect(fmtTime(rx(r, 'trip', true).tRx)).toBe('21.7 ms')
+    expect(rx(r, 'trip', true).fate).toBe('onTime')
+    expect(r.events.filter(e => e.kind === 'prpLan' && e.net === 'station').map(e => fmtTime(e.t))).toEqual(['2.000 s', '2.000 s'])
+    const c = defaultConfig(); c.features.mms = true; c.features.redundancy = true
+    const sa = simulate(stationConfig(c), { switchDown: { SBA: 0 } })
+    expect(rx(sa, 'trip', true).fate).toBe('onTime')
+    expect(sa.events.filter(e => e.kind === 'prpLan' && e.net === 'station').length).toBe(2)
+    const both = simulate(stationConfig(c), { switchDown: { SBA: 0, SBB: 0 } })
+    expect(fmtTime(ev(both, 'mmsLost').t)).toBe('1.000 s')
   })
 })

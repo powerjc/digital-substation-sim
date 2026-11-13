@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { deviceColor, SUB_STATUS } from '../lib/colors'
-import { LINK_PRESETS, SUB_WRONG, IED_MODES, countFailures } from '../lib/scenario'
+import { LINK_PRESETS, SUB_WRONG, IED_MODES, countFailures, linkPresetOf } from '../lib/scenario'
 import { parseEnd } from '../lib/network'
 import { isActive } from '../lib/features'
 import { HelpLink } from './Help'
@@ -188,6 +188,24 @@ function splitPB(L) {
   return out
 }
 
+// PRP on the station bus (with MMS): the same split for the SB bar
+function splitBus(L, id) {
+  const b = L[id]
+  if (!b) return L
+  const out = { ...L }
+  delete out[id]
+  if (b.h > b.w) {
+    const w = Math.max(10, b.w / 2 - 1)
+    out[`${id}A`] = { ...b, w }
+    out[`${id}B`] = { ...b, x: b.x + b.w - w, w }
+  } else {
+    const h = Math.max(10, b.h / 2 - 1)
+    out[`${id}A`] = { ...b, h }
+    out[`${id}B`] = { ...b, y: b.y + b.h - h, h }
+  }
+  return out
+}
+
 // RSTP: two ring switches in place of the process-bus bar, PB1 facing the
 // relays and PB2 facing the breaker IEDs
 function splitRing(L) {
@@ -282,9 +300,11 @@ export default function StationView({ config, run, onFaultAt }) {
   const two = config.ieds.some(d => d.id === '21-AX')
   const prpOn = config.switches.some(x => x.id === 'PBA')
   const ringOn = config.switches.some(x => x.id === 'PB1')
+  const sbPrp = config.switches.some(x => x.id === 'SBA')
+  const mmsOn = (config.rcbs ?? []).length > 0
   const svOn = config.ieds.some(d => d.kind === 'mu')
   const three = config.ieds.some(d => d.id === '87B-A')
-  const LAYOUT0 = (L => (prpOn ? splitPB(L) : ringOn ? splitRing(L) : L))(LAYOUTS[(narrow ? 'narrow' : 'wide') + (three ? '3' : (two ? '2' : '') + (svOn ? 'sv' : ''))])
+  const LAYOUT0 = (L => (sbPrp ? splitBus(L, 'SB') : L))((L => (prpOn ? splitPB(L) : ringOn ? splitRing(L) : L))(LAYOUTS[(narrow ? 'narrow' : 'wide') + (three ? '3' : (two ? '2' : '') + (svOn ? 'sv' : ''))]))
   const compact = !!LAYOUT0.compact
   // The view box ends below the lowest device present (the test set only with test mode)
   const present = [...config.ieds.map(d => d.id), ...config.switches.map(x => x.id)].filter(id => LAYOUT0[id])
@@ -356,8 +376,9 @@ export default function StationView({ config, run, onFaultAt }) {
         {/* Links */}
         {config.links.map(l => {
           const p = linkPts(l)
-          const swDown = [p.A, p.B].some(x => scenario.switchDown[x] !== undefined && time >= scenario.switchDown[x])
-          const down = (scenario.linkDown[l.id] !== undefined && time >= scenario.linkDown[l.id]) || swDown
+          const isDownAt = (d, u) => d !== undefined && time >= d && !(Number.isFinite(u) && time >= u)
+          const swDown = [p.A, p.B].some(x => isDownAt(scenario.switchDown[x], scenario.switchUp?.[x]))
+          const down = isDownAt(scenario.linkDown[l.id], scenario.linkUp?.[l.id]) || swDown
           const failing = scenario.linkDown[l.id] !== undefined || scenario.drops.some(d => d.link === l.id)
           const backsDown = l.rstp === 'standby' ? scenario.linkDown[l.backs] : undefined
           const rec = (config.network.rstpRecoveryMs ?? 50) / 1000
@@ -372,7 +393,7 @@ export default function StationView({ config, run, onFaultAt }) {
                 stroke={down ? '#dc2626' : healing ? '#d97706' : blocked ? '#d1d5db' : isSel('link', l.id) ? '#4f46e5' : '#9ca3af'} strokeWidth={isSel('link', l.id) ? 4 : 3}
                 strokeDasharray={down || blocked ? '6 4' : undefined} />
               {(detail || (!(prpOn && /[AB]$/.test(l.id)) && !l.rstp) || (failing && !l.rstp)) && <text x={vertical ? mx - 6 : mx} y={vertical ? my + 4 : p.a.y + 13} textAnchor={vertical ? 'end' : 'middle'} fontSize={10} fill={failing ? '#dc2626' : '#6b7280'} fontWeight={failing ? 700 : 400}>
-                {l.id}{down && !swDown ? ' DOWN' : ''}{healing ? ' reconfiguring' : blocked ? ' blocked' : ''}
+                {l.id}{down && !swDown && Math.hypot(p.a.x - p.b.x, p.a.y - p.b.y) > 50 ? ' DOWN' : ''}{healing ? ' reconfiguring' : blocked ? ' blocked' : ''}
               </text>}
             </g>
           )
@@ -455,9 +476,34 @@ export default function StationView({ config, run, onFaultAt }) {
                 <text x={b.x + 10} y={b.y + 18} fontSize={12.5} fontWeight="700" fill={deviceColor(d.id)}>{d.id}</text>
                 <text x={b.x + b.w - 10} y={b.y + 18} fontSize={10} fill="#6b7280" textAnchor="end">{d.label}{flt ? ' ⚠' : ''}</text>
                 <text x={b.x + 10} y={b.y + 36} fontSize={10} fill="#374151">
-                  SV {Math.round(80 * config.freqHz)}/s · smpSynch <tspan fontWeight="700" fill={st?.synch === 0 ? '#dc2626' : '#374151'}>{st?.synch ?? 2}</tspan>
+                  SV{state.prp?.[d.id] ? '' : ` ${Math.round(80 * config.freqHz)}/s`} · smpSynch <tspan fontWeight="700" fill={st?.synch === 0 ? '#dc2626' : '#374151'}>{st?.synch ?? 2}</tspan>
                   {state.prp?.[d.id] && <tspan fill="#6b7280">{'  '}PRP <tspan fill={state.prp[d.id].A === 'ok' ? '#16a34a' : '#dc2626'}>A{state.prp[d.id].A === 'ok' ? '✓' : '✗'}</tspan> <tspan fill={state.prp[d.id].B === 'ok' ? '#16a34a' : '#dc2626'}>B{state.prp[d.id].B === 'ok' ? '✓' : '✗'}</tspan></tspan>}
                 </text>
+              </g>
+            )
+          }
+          if (d.kind === 'hmi' && mmsOn) {
+            // MMS client: one association per relay (✓ up, ✗ lost, … reconnecting)
+            const rel = config.rcbs.map(r => r.ied)
+            const wideBox = b.w > 200
+            const perRow = wideBox ? rel.length : 2
+            const pp = state.prp?.[d.id]
+            return (
+              <g key={d.id} {...selectable('ied', d.id)}>
+                <rect x={b.x} y={b.y} width={b.w} height={b.h} rx={8} fill="#fff" stroke={isSel('ied', d.id) ? '#4f46e5' : deviceColor(d.id)} strokeWidth={isSel('ied', d.id) ? 2.5 : 1.5} />
+                <text x={b.x + b.w / 2} y={b.y + 14} textAnchor="middle" fontSize={11} fontWeight="700" fill={deviceColor(d.id)}>{d.label}</text>
+                <text x={b.x + b.w / 2} y={b.y + 26} textAnchor="middle" fontSize={8.5} fill="#6b7280">MMS client{pp ? <>{' · PRP '}<tspan fill={pp.A === 'ok' ? '#16a34a' : '#dc2626'}>A{pp.A === 'ok' ? '✓' : '✗'}</tspan> <tspan fill={pp.B === 'ok' ? '#16a34a' : '#dc2626'}>B{pp.B === 'ok' ? '✓' : '✗'}</tspan></> : null}</text>
+                {rel.map((id, i) => {
+                  const a = state.mms?.[id]?.assoc ?? 'up'
+                  const col = i % perRow, row = Math.floor(i / perRow)
+                  const cw = (b.w - 12) / perRow
+                  return (
+                    <text key={id} x={b.x + 6 + cw * col + cw / 2} y={b.y + 39 + row * 12} textAnchor="middle" fontSize={8.5} fontWeight="700"
+                      fill={a === 'up' ? '#16a34a' : a === 'connecting' ? '#d97706' : '#dc2626'}>
+                      {id} {a === 'up' ? '✓' : a === 'connecting' ? '…' : '✗'}
+                    </text>
+                  )
+                })}
               </g>
             )
           }
@@ -467,7 +513,7 @@ export default function StationView({ config, run, onFaultAt }) {
                 <rect x={b.x} y={b.y} width={b.w} height={b.h} rx={8} fill="#fff" stroke={isSel('ied', d.id) ? '#4f46e5' : deviceColor(d.id)} strokeWidth={1.5} />
                 <text x={b.x + b.w / 2} y={b.y + 19} textAnchor="middle" fontSize={12} fontWeight="700" fill={deviceColor(d.id)}>{d.label}</text>
                 <text x={b.x + b.w / 2} y={b.y + 34} textAnchor="middle" fontSize={9} fill="#6b7280">MMS to SCADA</text>
-                <text x={b.x + b.w / 2} y={b.y + 46} textAnchor="middle" fontSize={8.5} fill="#9ca3af">(not simulated yet)</text>
+                <text x={b.x + b.w / 2} y={b.y + 46} textAnchor="middle" fontSize={8.5} fill="#9ca3af">(off: ⚙ MMS reports)</text>
               </g>
             )
           }
@@ -563,11 +609,17 @@ export default function StationView({ config, run, onFaultAt }) {
                 <SubBadge x={b.x + 10} y={b.y + 96 + subs.length * 18} label="Sub SV" status={state.sv?.[svSub(d.id).id]?.status ?? 'healthy'} />
               )}
               <text x={b.x + 10} y={b.y + b.h - 8} fontSize={9} fill="#9ca3af">
-                {compact && d.protects ? `${d.protects === 'BUSA' ? 'zone: bus A' : 'zone: transformer'} · ` : ''}pub {config.gocbs.filter(g => g.ied === d.id).map(g => g.label).join(', ')}
+                {compact && d.protects ? `${d.protects === 'BUSA' ? 'zone: bus A' : state.prp?.[`${d.id}@S`] ? 'zone: xfmr' : 'zone: transformer'}${compact && state.prp?.[`${d.id}@S`] ? '' : ' · '}` : ''}{compact && state.prp?.[`${d.id}@S`] ? (d.protects ? '' : `pub ${config.gocbs.filter(g => g.ied === d.id).length} GOOSE`) : `pub ${config.gocbs.filter(g => g.ied === d.id).map(g => g.label).join(', ')}`}
               </text>
               {state.prp?.[d.id] && (
                 <text x={b.x + b.w - 10} y={b.y + b.h - 8} fontSize={9} textAnchor="end" fontWeight="700">
-                  <tspan fill="#6b7280" fontWeight="400">PRP </tspan>
+                  {state.prp[`${d.id}@S`] && <>
+                    <tspan fill="#6b7280" fontWeight="400">SB </tspan>
+                    <tspan fill={state.prp[`${d.id}@S`].A === 'ok' ? '#16a34a' : '#dc2626'}>A{state.prp[`${d.id}@S`].A === 'ok' ? '✓' : '✗'}</tspan>
+                    <tspan fill={state.prp[`${d.id}@S`].B === 'ok' ? '#16a34a' : '#dc2626'}> B{state.prp[`${d.id}@S`].B === 'ok' ? '✓' : '✗'}</tspan>
+                    <tspan fill="#6b7280" fontWeight="400">{'  '}PB </tspan>
+                  </>}
+                  {!state.prp[`${d.id}@S`] && <tspan fill="#6b7280" fontWeight="400">PRP </tspan>}
                   <tspan fill={state.prp[d.id].A === 'ok' ? '#16a34a' : '#dc2626'}>A{state.prp[d.id].A === 'ok' ? '✓' : '✗'}</tspan>
                   <tspan fill={state.prp[d.id].B === 'ok' ? '#16a34a' : '#dc2626'}> B{state.prp[d.id].B === 'ok' ? '✓' : '✗'}</tspan>
                 </text>
@@ -627,14 +679,15 @@ function FailurePanel({ config, sel, scenario, setScenario, onClose }) {
 
   let body = null
   if (sel.type === 'link') {
-    const cur = scenario.linkDown[sel.id]
-    const preset = LINK_PRESETS.find(p => (p.t === null ? cur === undefined : p.t === cur))?.id ?? 'up'
+    const preset = linkPresetOf(scenario.linkDown[sel.id], scenario.linkUp?.[sel.id])
     const setPreset = id => setScenario(sc => {
-      const linkDown = { ...sc.linkDown }
+      const linkDown = { ...sc.linkDown }, linkUp = { ...(sc.linkUp ?? {}) }
       const p = LINK_PRESETS.find(x => x.id === id)
-      if (p.t === null) delete linkDown[sel.id]
-      else linkDown[sel.id] = p.t
-      return { ...sc, linkDown }
+      delete linkDown[sel.id]
+      delete linkUp[sel.id]
+      if (p.t !== null) linkDown[sel.id] = p.t
+      if (p.upAt !== undefined) linkUp[sel.id] = p.upAt
+      return { ...sc, linkDown, linkUp }
     })
     body = (
       <div className="flex flex-col gap-2">
@@ -662,14 +715,15 @@ function FailurePanel({ config, sel, scenario, setScenario, onClose }) {
     )
   } else if (sel.type === 'switch') {
     const sw = config.switches.find(x => x.id === sel.id)
-    const cur = scenario.switchDown[sw.id]
-    const preset = LINK_PRESETS.find(p => (p.t === null ? cur === undefined : p.t === cur))?.id ?? 'up'
+    const preset = linkPresetOf(scenario.switchDown[sw.id], scenario.switchUp?.[sw.id])
     const setPreset = id => setScenario(sc => {
-      const switchDown = { ...sc.switchDown }
+      const switchDown = { ...sc.switchDown }, switchUp = { ...(sc.switchUp ?? {}) }
       const p = LINK_PRESETS.find(x => x.id === id)
-      if (p.t === null) delete switchDown[sw.id]
-      else switchDown[sw.id] = p.t
-      return { ...sc, switchDown }
+      delete switchDown[sw.id]
+      delete switchUp[sw.id]
+      if (p.t !== null) switchDown[sw.id] = p.t
+      if (p.upAt !== undefined) switchUp[sw.id] = p.upAt
+      return { ...sc, switchDown, switchUp }
     })
     body = (
       <div className="flex flex-col gap-2">
@@ -768,7 +822,25 @@ function FailurePanel({ config, sel, scenario, setScenario, onClose }) {
             </>
           )
         })()}
-        {ied.kind === 'hmi' && <span className="text-gray-500">The gateway talks MMS to SCADA, which the simulator doesn’t model yet. Fail the station-bus switch to see that protection doesn’t depend on it.</span>}
+        {ied.kind === 'hmi' && !(config.rcbs ?? []).length && <span className="text-gray-500">The gateway talks MMS to the IEDs and passes their data to SCADA. Turn on ⚙ MMS reports to simulate it; meanwhile, fail the station-bus switch to see that protection doesn’t depend on it.</span>}
+        {ied.kind === 'hmi' && (config.rcbs ?? []).length > 0 && <span className="text-gray-500">The gateway is an MMS client of every relay: it holds an association with each and receives their reports. It declares an association lost after {config.mms?.assocTimeoutS} s without an answer and reconnects {config.mms?.reconnectS} s after the path returns (illustrative). Fail a station-bus link to see it.</span>}
+        {ied.kind === 'relay' && (config.rcbs ?? []).some(r => r.ied === ied.id) && (() => {
+          const rcb = config.rcbs.find(r => r.ied === ied.id)
+          const unb = (scenario.rcbUnbuffered ?? []).includes(rcb.id)
+          const set = v => setScenario(sc => {
+            const list = (sc.rcbUnbuffered ?? []).filter(x => x !== rcb.id)
+            return { ...sc, rcbUnbuffered: v === 'unbuffered' ? [...list, rcb.id] : list }
+          })
+          return (
+            <label className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 sm:gap-2">
+              <span>Report to the gateway (MMS)</span>
+              <select value={unb ? 'unbuffered' : 'buffered'} onChange={e => set(e.target.value)} className="border border-gray-300 rounded px-2 py-1 bg-white">
+                <option value="buffered">Buffered (BRCB), as engineered</option>
+                <option value="unbuffered">Engineered unbuffered (URCB)</option>
+              </select>
+            </label>
+          )
+        })()}
         {isActive(config, 'testMode') && (ied.kind === 'relay' || ied.kind === 'breaker') && (
           <label className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 sm:gap-2">
             <span>Mode (Mod/Beh)</span>
