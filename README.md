@@ -39,7 +39,19 @@ npm test
 npm run build   # → app/dist (static site)
 ```
 
-## Deploy
+## Docker
+
+To run it on a machine with nothing but Docker (no Node, no internet access needed once the image is built):
+
+```bash
+docker compose up -d --build    # → http://localhost:8081
+```
+
+Update with `git pull` and the same command; stop with `docker compose down`. It listens on the machine itself only; to open it to other machines on the network, start it with `BIND=0.0.0.0:8081 docker compose up -d --build`. Port 8081 by default, so it can run next to the Line Protection Simulator on 8080.
+
+The image is unprivileged nginx serving the built files only (about 90 MB): non-root, read-only filesystem, no capabilities, a strict content security policy (the app loads nothing from outside), and a health check on `/healthz`. For public hosting, keep the default and put the host's nginx in front for TLS and access control: `app/deploy/nginx-host.conf.example`.
+
+## GitHub Pages
 
 The production build is a static site. `.github/workflows/pages.yml` tests, builds and publishes it to GitHub Pages on every push to `main` of a GitHub copy of the repo (that repo needs Settings → Pages → Source: "GitHub Actions"). It sets `VITE_BASE=/digital-substation-sim/` because Pages serves the project under that path; to try that build locally, run `VITE_BASE=/digital-substation-sim/ npm run build` and `VITE_BASE=/digital-substation-sim/ npx vite preview`.
 

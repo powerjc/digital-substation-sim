@@ -48,7 +48,7 @@ Data flow: `App` (config) → `stationConfig` → `useRun` (scenario, zoom, play
 2. `npm run build`
 3. UI changes: screenshot with headless Chromium (Playwright, outside the project); check desktop and ultrawide (3440×1440) when layout changes, and that phone (390×844) still renders readably (phone is for review and debugging, not optimized)
 4. Docs: SPEC § Status & backlog, README
-5. Deploy changes: `VITE_BASE=/digital-substation-sim/ npm run build` and preview with the same `VITE_BASE` (the Pages workflow builds under that path)
+5. Deploy changes: `VITE_BASE=/digital-substation-sim/ npm run build` and preview with the same `VITE_BASE` (the Pages workflow builds under that path). Docker: `BIND=127.0.0.1:18081 docker compose -p dsstest up -d --build`, check `/healthz` and the page (no console errors under the CSP), then `docker compose -p dsstest down` and remove the image. A new build-time file in `app/` must be added to the Dockerfile's `COPY` lines
 
 ## Run
 
