@@ -2,6 +2,8 @@
 
 An interactive, browser-based training simulator for the digital substation: how a protection trip travels as an IEC 61850 **GOOSE** message instead of over a wire, and what breaks when the network or its configuration is wrong.
 
+**Try it:** https://powerjc.github.io/digital-substation-sim/
+
 Companion to the Line Protection Simulator, which answers "the relay tripped at 17 ms, and here is why". This one answers "and here is how that trip travelled over the network".
 
 **Status:** in development. Bay simulator: GOOSE in one bay, plus (behind ⚙) test mode with a test set, a second bay with breaker failure, a redundant process bus (PRP or RSTP), Sampled Values, a transformer bay with transformer and bus differential, time sync (PTP), MMS reports to the gateway (with PRP on the station bus), and MMS controls (select before operate). Foundations: Parts A–E. See `SPEC.md`.
