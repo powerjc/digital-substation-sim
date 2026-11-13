@@ -1,6 +1,6 @@
 # Digital Substation Simulator
 
-IEC 61850 training simulator (GOOSE now; Sampled Values, more bays and redundancy later). React + Vite + Tailwind, pure client-side. Spec: `SPEC.md` (start with § Status & backlog). App code: `app/`. Sibling project: Line Protection Simulator (separate repo, no shared code, no data exchange; its `docs/iec61850-interface.md` holds the dividing line).
+IEC 61850 training simulator: GOOSE, Sampled Values, PRP / RSTP, PTP and MMS (reports and controls), in up to three bays behind feature toggles. React + Vite + Tailwind, pure client-side. Spec: `SPEC.md` (start with § Status & backlog). App code: `app/`. Sibling project: Line Protection Simulator (separate repo, no shared code, no data exchange; its `docs/iec61850-interface.md` holds the dividing line).
 
 ## Architecture
 
@@ -8,7 +8,7 @@ Pure simulation logic lives in `app/src/lib/` (no React — keep it that way so 
 
 | File | Role |
 |------|------|
-| `schema.js` | Config schema (v2; v1 migrates): the station as data (IEDs, switches, links, GOOSE control blocks, subscriptions), scripted timing, stack and network figures, `features`. `migrateConfig()`, `PROFILES` (retransmission), `TRIP_CLASS` |
+| `schema.js` | Config schema (v10; every older version migrates step by step): the station as data (IEDs, switches, links, GOOSE control blocks, subscriptions), scripted timing, stack and network figures, `features`. `migrateConfig()`, `PROFILES` (retransmission), `TRIP_CLASS` |
 | `station.js` | `stationConfig(config)`: the station the engine runs. Station bus SB + process bus PB in the base config; feature `secondBay` adds bay A–X and breaker-failure GOOSE; feature `testMode` adds the test set TS on PB port 9; feature `timeSync` (implies `sampledValues`) adds grandmasters GM1 / GM2 on PB (`lib/ptp.js` drives each merging unit's smpSynch); feature `transformerBay` (implies `secondBay` + `sampledValues`) adds 87-AT, 52-AT, 87B-A (relays have a zone: `protects` 'XFMRAT' / 'BUSA', else `line`); feature `mms` adds a report control block per relay (`rcbs`: client GW, `buffered`, items trip / bf / pos); feature `controls` (implies `mms`) adds CSWI1 per relay with a bay breaker (`ctls`) and a Control GOOSE `<bay>.Ctl` subscribed by the breaker IED (use `control`); with PRP, mms splits SB into SBA / SBB (`prpSupervision: 'frames'`); feature `sampledValues` adds merging units MU-<bay> (+ MU-ATL) with `svcbs` / `svSubs`; feature `redundancy` splits PB into PRP LANs PBA / PBB (switch `lan: 'A' | 'B'`, IED ports `P.A` / `P.B`, breaker `A` / `B`), or with `network.redundancy: 'rstp'` into ring switches PB1 / PB2 with links R1 (`rstp: 'active'`) and R2 (`rstp: 'standby'`, `backs: 'R1'`) |
 | `scenario.js` | Injected failures (`linkDown` / `linkUp`, `switchDown` / `switchUp`, `rcbUnbuffered`, `control` (operator command, not a failure), `drops`, `subWrong`, `vlanMissing`, `iedMode`, `breakerStuck`, `switchDown`), `applyScenario()` (engineering errors applied to a config copy), fixed `LINK_PRESETS` |
 | `network.js` | Topology from links, `forward()`: carries a frame through store-and-forward switches (VLAN membership on ingress and egress, link down, explicit drops), hop timing |
@@ -20,11 +20,11 @@ Pure simulation logic lives in `app/src/lib/` (no React — keep it that way so 
 
 Two views (tabs): **Bay simulator** (default) and **Foundations** (`components/foundations/`: chapter list, chapter page with copper anchor, figure, key point, link into the simulator; glossary term bar).
 
-Data flow: `App` (config) → `stationConfig` → `useRun` (scenario, zoom, playback) → `simulate` → `StationView` (bay diagram, frames in flight, failure controls), `TimingChart` (logic analyzer with frame lanes and subscription status), `OutcomeCard` (verdict, transfer-time budget), `FrameList` / `FrameDetail` (protocol-analyzer view; bottom sheet on phones), `EventLog`.
+Data flow: `App` (config) → `stationConfig` → `useRun` (scenario, zoom, playback) → `simulate` → `StationView` (bay diagram, frames in flight, failure controls), `TimingChart` (logic analyzer with frame lanes and subscription status), `OutcomeCard` (verdict, transfer-time budget), `SVPanel` (synthesized waveforms, the sample at the cursor), `ScadaPanel` (what the gateway shows, reports and commands), `FrameList` / `FrameDetail` (protocol-analyzer view; bottom sheet on phones), `EventLog`.
 
 ## Conventions
 
-- **Topology is data.** No engine code names a device; slice 1 is a config with one bay (A–B). The end goal (SPEC § 2.1) is bus A with lines A–X, A–B and a transformer tap A–T; new bays are config entries plus a `LAYOUT` entry in `StationView`
+- **Topology is data.** No engine code names a device; the base config has one bay (A–B); the full station (SPEC § 2.1: bus A with lines A–X, A–B and a transformer tap A–T) comes from features in `station.js`; new bays are config entries plus a `LAYOUT` entry in `StationView`
 - **Ids** `<function>-<own bus><far end>` as in the sibling: relay `21-AB`, breaker IED `52-AB`; links `L1…`; switches `PB` (process bus) and `SB` (station bus); gateway `GW`, test set `TS`
 - **Topology:** link ends are `ied`, `ied:port` (relays: `P` process, `S` station) or `switch:n`. A control block with `port` is published only on that port (relays publish on `P`). Bus bars in `StationView` layouts carry `bar: true`
 - **Units:** protection-relevant times stored in cycles (`relayTripCycles`, `breakerOpenCycles`, …); communication times in ms; network in Mbit/s and µs. Engine time in seconds; the fault is at t = 0; the run starts at `START_T` (−3 s). Display: ms everywhere, plus cycles for fault → trip, transfer, breaker open, clearing
@@ -48,6 +48,7 @@ Data flow: `App` (config) → `stationConfig` → `useRun` (scenario, zoom, play
 2. `npm run build`
 3. UI changes: screenshot with headless Chromium (Playwright, outside the project); check desktop and ultrawide (3440×1440) when layout changes, and that phone (390×844) still renders readably (phone is for review and debugging, not optimized)
 4. Docs: SPEC § Status & backlog, README
+5. Deploy changes: `VITE_BASE=/digital-substation-sim/ npm run build` and preview with the same `VITE_BASE` (the Pages workflow builds under that path)
 
 ## Run
 

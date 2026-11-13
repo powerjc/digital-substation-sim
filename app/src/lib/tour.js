@@ -35,7 +35,7 @@ export const TOUR = [
   },
   {
     panel: 'header', title: 'Lessons, settings and Foundations',
-    text: 'Lessons set up a situation and tell you what to watch for. ⚙ adds more detail when you want it: network detail, test mode, a second bay with breaker failure. Foundations explains everything on this screen from the copper wiring up; the small ? beside a panel title opens the matching chapter.',
+    text: 'Lessons set up a situation and tell you what to watch for. ⚙ adds more when you want it: network detail, test mode, more bays, redundancy, Sampled Values, time sync, and MMS to the gateway. Foundations explains everything on this screen from the copper wiring up; the small ? beside a panel title opens the matching chapter.',
     chapter: null,
   },
 ]

@@ -1,7 +1,7 @@
 // Lesson content (data). Every number quoted here is checked by
 // sim.test.js; when a test disagrees with the text, fix the text.
 //
-// { id, track, title, zoom: 'trip' | 'bf' | 'heartbeats', setup?(cfg), scenario,
+// { id, track, title, zoom: 'trip' | 'bf' | 'control' | 'heartbeats', setup?(cfg), scenario,
 //   intro, watch[], tryIt[], takeaway, expect: { verdict } }
 
 export const TRACKS = ['GOOSE basics', 'Test mode', 'Two bays', 'Redundancy', 'Sampled Values', 'Transformer and bus', 'Time sync', 'Station bus', 'Controls']
@@ -61,7 +61,7 @@ export const LESSONS = [
       'Tap link L1 and choose “Fails 2 s before the fault”, then the Heartbeats view. 52-AB’s Trip subscription goes LOST at −600 ms, 1.4 s after the link failed, when the TAL (2000 ms) of the last heartbeat runs out. The trip is never delivered.',
       'Choose “Fails at the fault”: nothing warns before the trip, the trip is lost, and the alarm comes at 1.400 s, long after the fault should have been cleared.',
     ],
-    takeaway: 'Fast repeats after a change make one lost frame cheap. Supervision tells you a link is gone within about two heartbeats, but it is an alarm, not a fix. Redundancy (PRP/HSR, a later slice) is the fix.',
+    takeaway: 'Fast repeats after a change make one lost frame cheap. Supervision tells you a link is gone within about two heartbeats, but it is an alarm, not a fix. Redundancy is the fix: see the Redundancy track (PRP).',
     expect: { verdict: 'late' },
   },
   {
@@ -98,7 +98,7 @@ export const LESSONS = [
     ],
     tryIt: [
       'Tap 52-AB and clear Simulation mode: it now ignores the test set (“simulated: ignored”) and opens on the real trip at 52.0 ms.',
-      'Put 52-AB back in simulation mode, then tap the test set and set it to publish nothing (unplugged): with no simulated message to take, 52-AB uses the real trip and opens at 52.0 ms.',
+      'Put 52-AB back in simulation mode, then tap the test set and set it to “Nothing (idle)”, as if unplugged: with no simulated message to take, 52-AB uses the real trip and opens at 52.0 ms.',
       'Set the test set back to the simulated Trip and inject a trip 1 s before the fault: 52-AB opens the breaker on the test set alone. That is the test this setup is for: proving the breaker IED’s trip path while 21-AB stays in service.',
     ],
     takeaway: 'Simulation mode is the digital test switch left open with the test set still connected: the IED listens to the test set, not to the protection. Supervision can’t see it; only the IED’s mode shows it. Restore means simulation off and the test set unplugged (Foundations D3).',
@@ -131,7 +131,7 @@ export const LESSONS = [
     zoom: 'bf',
     setup: cfg => { cfg.features.secondBay = true },
     scenario: { subWrong: { '52-AB.Trip': 'appid' } },
-    intro: 'Lesson 2’s commissioning miss again: 52-AB’s subscription has the wrong APPID. This time bus A has two bays and breaker failure.',
+    intro: 'The commissioning miss from “The relay tripped, but the breaker never heard it” again: 52-AB’s subscription has the wrong APPID. This time bus A has two bays and breaker failure.',
     watch: [
       '52-AB ignores every trip frame, and its breaker stays closed.',
       '21-AB’s breaker failure still sees current at 150.0 ms and sends its BF trip; 52-AX opens at 185.4 ms.',
@@ -156,9 +156,9 @@ export const LESSONS = [
     ],
     tryIt: [
       'Switch to the “Up to 250 ms” view to watch the trip and the BF trip go nowhere.',
-      'Repair PB and fail the station-bus switch SB instead: protection carries on and the breaker opens at 52.0 ms. The station bus carries SCADA’s MMS (not simulated yet), not the trips.',
+      'Repair PB and fail the station-bus switch SB instead: protection carries on and the breaker opens at 52.0 ms. The station bus carries SCADA’s MMS (⚙ MMS reports simulates it), not the trips.',
     ],
-    takeaway: 'A shared process bus couples bays that copper kept apart: one failed switch silenced both bays’ protection messages at once. Supervision found it within two seconds; a second, parallel network (PRP, the next slice) is how stations avoid it.',
+    takeaway: 'A shared process bus couples bays that copper kept apart: one failed switch silenced both bays’ protection messages at once. Supervision found it within two seconds; a second, parallel network (PRP, the next track) is how stations avoid it.',
     expect: { verdict: 'notDelivered' },
   },
   {
@@ -196,7 +196,7 @@ export const LESSONS = [
     tryIt: [
       'Decode a trip frame and look at its PRP copies at 52-AB: LAN A lost, LAN B used.',
       'Tap PBB and make it fail at the fault as well: both copies are lost and nothing at bus A clears the fault. The PRP alarms were the warning that the station had been running without redundancy.',
-      'Clear the failures and lose the first trip frame on link L1A instead: the LAN B copy delivers it with no delay. In lesson 3 the same loss cost 2 ms.',
+      'Clear the failures and lose the first trip frame on link L1A instead: the LAN B copy delivers it with no delay. In “One lost frame, and a dead link” the same loss cost 2 ms.',
     ],
     takeaway: 'PRP loses nothing when one network fails: there is no recovery time, because the second copy is already on its way. But protection can’t tell that a LAN is gone; only the PRP alarm says the station is no longer redundant, and it must be acted on like any protection alarm.',
     expect: { verdict: 'delivered' },
@@ -256,7 +256,7 @@ export const LESSONS = [
       '21-AB never trips: it has no valid samples, so it cannot see the fault. The outcome says line A–B’s own protection never acted.',
     ],
     tryIt: [
-      'Tap MU-AB and choose “Sample counter freezes”: frames keep arriving, but with the counter stuck the samples are stale. 21-AB blocks just the same.',
+      'Tap MU-AB and choose “Sample counter freezes 5 ms after the fault”: frames keep arriving, but with the counter stuck the samples are stale. 21-AB blocks just the same.',
       'Set MU-AB back to normal and make its link M1 fail 2 s before the fault: the SV alarm stands long before the fault, and the relay can’t trip when it comes.',
       'With MU-AB normal, turn on ⚙ Redundant process bus, choose RSTP, and make ring link R1 fail at the fault: samples stop for the 50 ms the ring needs, and 21-AB trips at 66.7 ms, one cycle after they return.',
     ],

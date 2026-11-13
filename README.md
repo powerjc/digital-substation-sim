@@ -9,11 +9,11 @@ Companion to the Line Protection Simulator, which answers "the relay tripped at 
 ## What it shows
 
 - **One bay** (line A–B) on a station bus and a process bus: line relay 21-AB with a port on each, breaker IED 52-AB (the bay's process interface unit) on the process bus, a gateway on the station bus. The relay publishes a Trip GOOSE; the breaker IED publishes its position back.
-- **Timing chart** in the style of a logic analyzer: device signals, every frame on the wire (labelled stNum/sqNum and colored by what the subscriber did with it), and each subscription's supervision state. Two views: around the trip (ms) and heartbeats (s).
+- **Timing chart** in the style of a logic analyzer: device signals, every frame on the wire (labelled stNum/sqNum and colored by what the subscriber did with it), and each subscription's supervision state. Fixed views: around the trip (ms), up to 250 ms (breaker failure), the operator command, and heartbeats (s).
 - **Decoded frames** in the style of a protocol analyzer, every field with a one-line explanation, and expected vs received values for a frame the subscriber ignored or rejected.
-- **Failures to inject:** link down (fixed presets), one lost frame, a subscription engineered with the wrong APPID, gocbRef, dataset or confRev, a switch port missing the VLAN.
+- **Failures to inject:** link or switch down (fixed presets, including an outage that comes back), one lost frame, a subscription engineered with the wrong APPID, gocbRef, dataset or confRev, a switch port missing the VLAN; more with the ⚙ options below (IED modes, a stuck breaker, merging-unit and grandmaster faults, an unbuffered report).
 - **Outcome:** transfer time against the 3 ms class for trip messages (IEC 61850-5, TT6), breaker open time, and which alarms warned, and when.
-- **Lessons:** *A trip is a message*, *The relay tripped, but the breaker never heard it*, *One lost frame, and a dead link*; *The relay was left in test*, *Left in simulation mode*; *Breaker failure: the neighbours clear it*, *A lost trip, saved by breaker failure*, *One switch, two bays*, *Right in one bay, missing in the other*; *Two networks: nothing lost*, *RSTP: “the network recovered in 50 ms”*; *The CT wiring is a stream*, *No samples, no protection*; *Bus differential: one message, every breaker*, *One clock lost, the whole bus unprotected*, *Transformer differential: both sides or nothing*; *No GPS, still one clock*, *The grandmaster fails: a gap with no differential*; *SCADA hears it second*, *The station bus drops: SCADA catches up*, *Unbuffered: the trip SCADA never saw*, *PRP on the station bus*. A tour explains the screen.
+- **Lessons:** *A trip is a message*, *The relay tripped, but the breaker never heard it*, *One lost frame, and a dead link*; *The relay was left in test*, *Left in simulation mode*; *Breaker failure: the neighbours clear it*, *A lost trip, saved by breaker failure*, *One switch, two bays*, *Right in one bay, missing in the other*; *Two networks: nothing lost*, *RSTP: “the network recovered in 50 ms”*; *The CT wiring is a stream*, *No samples, no protection*; *Bus differential: one message, every breaker*, *One clock lost, the whole bus unprotected*, *Transformer differential: both sides or nothing*; *No GPS, still one clock*, *The grandmaster fails: a gap with no differential*; *SCADA hears it second*, *The station bus drops: SCADA catches up*, *Unbuffered: the trip SCADA never saw*, *PRP on the station bus*; *Closing a breaker from SCADA*, *Interlocked: the relay can’t see the breaker*, *The command that never arrived*. Every number a lesson quotes, including its try-this steps, is checked by a test. A tour explains the screen.
 - **⚙ options:** network detail; MMS reports to the gateway (buffered reports, association supervision, general interrogation, a SCADA view of what the operator sees; with PRP the station bus is doubled too); MMS controls (the operator opens or closes a breaker: select before operate through the relay’s CSWI, interlocking on the GOOSE position, a Control GOOSE to the breaker IED, command termination); time sync (two PTP grandmasters: GPS loss, holdover, failover); transformer bay A–T with 87T and bus differential 87B (fault on the line, the bus or the transformer); Sampled Values (a merging unit per line bay; the relay measures from the stream); test mode (on / test / test/blocked per IED, simulation mode, and a test set publishing simulated GOOSE); a second bay (line A–X) with breaker failure, a stuck breaker and switch failures; a redundant process bus (PRP with LAN A and LAN B, or an RSTP ring).
 - **Foundations:** 25 short chapters from the copper you know to the network (A), IEC 61850 messaging (B), virtual wiring in ANSI / IEEE terms (C), configuration and SCL (D), and time (E), each with a figure that runs the simulator's own engine; a 90-term glossary.
 
@@ -34,7 +34,12 @@ cd app
 npm install
 npm run dev     # http://localhost:5174
 npm test
+npm run build   # → app/dist (static site)
 ```
+
+## Deploy
+
+The production build is a static site. `.github/workflows/pages.yml` tests, builds and publishes it to GitHub Pages on every push to `main` of a GitHub copy of the repo (that repo needs Settings → Pages → Source: "GitHub Actions"). It sets `VITE_BASE=/digital-substation-sim/` because Pages serves the project under that path; to try that build locally, run `VITE_BASE=/digital-substation-sim/ npm run build` and `VITE_BASE=/digital-substation-sim/ npx vite preview`.
 
 ## Licence
 

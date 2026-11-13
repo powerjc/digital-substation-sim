@@ -913,3 +913,73 @@ describe('lesson figures: controls', () => {
   })
   const ctlCfgL = () => { const c = defaultConfig(); c.features.controls = true; return stationConfig(c) }
 })
+
+// Try-this claims not covered by the lesson-figure tests above
+describe('lesson try-this claims', () => {
+  const st = (setup, fault) => { const c = defaultConfig(); setup(c); if (fault) c.script.faultLine = fault; return stationConfig(c) }
+  const two = c => { c.features.secondBay = true }
+  const tm = c => { c.features.testMode = true }
+  const sv = c => { c.features.sampledValues = true }
+  const xf = c => { c.features.transformerBay = true }
+  const open = r => fmtTime(r.outcome.openT)
+  it('never heard: a wrong gocbRef is rejected (CONFIG); PB port 2 out of VLAN 10 also costs 21-AB the Position GOOSE', () => {
+    const r = run({ subWrong: { '52-AB.Trip': 'gocbRef' } })
+    expect(r.events.at(-1).state.subs['52-AB.Trip'].status).toBe('mismatch')
+    const v = run({ vlanMissing: [{ sw: 'PB', port: 2, vlan: 10 }] })
+    expect(v.outcome.verdict).toBe('notDelivered')
+    expect(v.events.at(-1).state.subs['21-AB.Pos'].status).not.toBe('healthy')
+  })
+  it('left in test: 52-AB in test too opens at 52.0 ms', () => {
+    const r = simulate(st(tm), { iedMode: { '21-AB': 'test', '52-AB': 'test' } })
+    expect(open(r)).toBe('52.0 ms')
+  })
+  it('left in simulation mode: a simulated trip 1 s before opens the breaker on the test set alone', () => {
+    const r = simulate(st(tm), { testSet: { imitate: 'AB.Trip', tripAt: -1 }, simMode: ['52-AB'] })
+    expect(r.outcome.verdict).toBe('openBefore')
+  })
+  it('breaker failure: 52-AB not stuck opens at 52.0 ms and BF never operates', () => {
+    const r = simulate(st(two), {})
+    expect(open(r)).toBe('52.0 ms')
+    expect(ev(r, 'bf')).toBeUndefined()
+  })
+  it('one switch: SB failing instead leaves protection alone, 52.0 ms', () => {
+    expect(open(simulate(st(two), { switchDown: { SB: -2.0 } }))).toBe('52.0 ms')
+  })
+  it('PRP: PBB failing at the fault as well clears nothing; the first trip frame lost on L1A costs nothing (2.03 ms)', () => {
+    const p = c => { two(c); c.features.redundancy = true }
+    expect(simulate(st(p), { switchDown: { PBA: -2.0, PBB: 0 } }).outcome.verdict).toBe('notDelivered')
+    expect(fmtDur(simulate(st(p), { drops: [{ link: 'L1A', gocb: 'AB.Trip', st: 2, sq: 0 }] }).outcome.transferT)).toBe('2.03 ms')
+  })
+  it('RSTP vs PRP: on PRP, PBA failing at the fault costs nothing (2.03 ms)', () => {
+    const r = simulate(st(c => { c.features.redundancy = true }), { switchDown: { PBA: 0 } })
+    expect(fmtDur(r.outcome.transferT)).toBe('2.03 ms')
+  })
+  it('SV stream: MU-AB losing sync 1 s before, 21-AB still trips at 16.7 ms', () => {
+    const r = simulate(st(sv), { svFault: { 'AB.SV': { kind: 'sync', at: -1.0 } } })
+    expect(fmtTime(r.outcome.tripT)).toBe('16.7 ms')
+  })
+  it('no samples: link M1 failing 2 s before, no trip', () => {
+    expect(simulate(st(sv), { linkDown: { M1: -2.0 } }).outcome.verdict).toBe('noTrip')
+  })
+  it('bus differential: a line A–B fault leaves 87B-A quiet and 21-AB opens 52-AB alone; a transformer fault opens 52-AT only', () => {
+    const l = simulate(st(xf, 'AB'), {})
+    expect(ev(l, 'trip', '87B-A')).toBeUndefined()
+    expect(l.events.filter(e => e.kind === 'open').map(e => e.dev)).toEqual(['52-AB'])
+    const t = simulate(st(xf, 'XFMRAT'), {})
+    expect(t.events.filter(e => e.kind === 'open').map(e => e.dev)).toEqual(['52-AT'])
+  })
+  it('one clock lost: a line A–B fault still trips 21-AB at 16.7 ms; MU-AX normal, 87B-A trips at 16.7 ms', () => {
+    const r = simulate(st(xf, 'AB'), { svFault: { 'AX.SV': { kind: 'sync', at: -1.0 } } })
+    expect(fmtTime(r.outcome.tripT)).toBe('16.7 ms')
+    expect(fmtTime(simulate(st(xf, 'BUSA'), {}).outcome.tripT)).toBe('16.7 ms')
+  })
+  it('transformer differential: MU-ATL normal, 87-AT trips 52-AT at 16.7 ms, open 52.0 ms', () => {
+    const r = simulate(st(xf, 'XFMRAT'), {})
+    expect(fmtTime(r.outcome.tripT)).toBe('16.7 ms')
+    expect(open(r)).toBe('52.0 ms')
+  })
+  it('MMS controls: the Control GOOSE is published all the time, heartbeats in the quiet period', () => {
+    const r = simulate(st(c => { c.features.controls = true }), {})
+    expect(r.frames.filter(f => f.gocb === 'AB.Ctl' && f.sendT < 0).length).toBeGreaterThanOrEqual(3)
+  })
+})
