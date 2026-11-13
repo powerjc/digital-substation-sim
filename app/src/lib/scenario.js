@@ -17,8 +17,9 @@
 //   svFault:    { [svId]: { kind, at } }  merging-unit problem: stop | freeze | invalid | sync
 //   gm:         { [gmId]: { gpsLostAt, failAt } } grandmaster problems (feature timeSync)
 //   rcbUnbuffered: [rcbId]                a report engineered unbuffered (URCB) instead of buffered (feature mms)
+//   control:    { ied, op, at } | null    an operator command through relay ied's CSWI: 'open' | 'close' at t (s) (feature controls; not a failure)
 
-export const EMPTY_SCENARIO = { linkDown: {}, drops: [], subWrong: {}, vlanMissing: [], iedMode: {}, breakerStuck: [], switchDown: {}, subMissing: [], testSet: null, simMode: [], svFault: {}, gm: {}, linkUp: {}, switchUp: {}, rcbUnbuffered: [] }
+export const EMPTY_SCENARIO = { linkDown: {}, drops: [], subWrong: {}, vlanMissing: [], iedMode: {}, breakerStuck: [], switchDown: {}, subMissing: [], testSet: null, simMode: [], svFault: {}, gm: {}, linkUp: {}, switchUp: {}, rcbUnbuffered: [], control: null }
 
 export const normalizeScenario = sc => ({ ...EMPTY_SCENARIO, ...(sc ?? {}) })
 
@@ -35,6 +36,9 @@ export const IED_MODES = [
   { id: 'test', label: 'Test' },
   { id: 'test/blocked', label: 'Test/blocked' },
 ]
+
+// The time of an operator command (fixed, like the link presets)
+export const CONTROL_AT = 0.5
 
 // Fixed choices for a link or switch, instead of a free time setting
 export const LINK_PRESETS = [

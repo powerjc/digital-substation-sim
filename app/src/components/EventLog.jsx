@@ -36,6 +36,13 @@ const KIND_STYLE = {
   mmsOk: 'text-green-700',
   mmsDrop: 'text-red-700 font-semibold',
   gi: 'text-violet-700',
+  ctl: 'text-blue-700',
+  ctlDone: 'text-green-700 font-semibold',
+  ctlFail: 'text-red-700 font-semibold',
+  ctlRefused: 'text-red-700',
+  closeCoil: 'text-green-700 font-semibold',
+  close: 'text-green-700',
+  faultGone: 'text-gray-600',
   prpOk: 'text-green-700',
 }
 

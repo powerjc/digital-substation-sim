@@ -74,6 +74,31 @@ function addReports(c) {
   return c
 }
 
+// MMS controls (feature controls): each relay with a report and a breaker in its
+// bay controls that breaker (CSWI1, select before operate with enhanced
+// security). The command goes on to the breaker IED as a GOOSE of its own
+// (Control: CSWI1.OpOpn / OpCls), which the breaker IED subscribes to.
+const CTL_ADDR = { AB: ['01-0C-CD-01-00-04', 0x0104], AX: ['01-0C-CD-01-00-14', 0x0204], AT: ['01-0C-CD-01-00-23', 0x0303] }
+function addControls(c) {
+  c.ctls = []
+  for (const rcb of c.rcbs ?? []) {
+    const r = c.ieds.find(d => d.id === rcb.ied)
+    const bkr = c.ieds.find(d => d.kind === 'breaker' && d.bay === r.bay)
+    const addr = CTL_ADDR[r.bay]
+    if (!bkr || !addr || !c.subscriptions.some(s => s.ied === r.id && s.use === 'breakerPos')) continue
+    const g = gocb(`${r.bay}.Ctl`, r.id, 'Control', r.name, 'CTRL', 'Ctl', 'DS_Ctl', `${r.bay}_Ctl`, addr[0], addr[1], [
+      { ref: 'CTRL/CSWI1.OpOpn.general', type: 'BOOLEAN', signal: 'opnCmd' },
+      { ref: 'CTRL/CSWI1.OpOpn.q', type: 'Quality', signal: 'opnCmd' },
+      { ref: 'CTRL/CSWI1.OpCls.general', type: 'BOOLEAN', signal: 'clsCmd' },
+      { ref: 'CTRL/CSWI1.OpCls.q', type: 'Quality', signal: 'clsCmd' },
+    ], 'P')
+    c.gocbs.push(g)
+    c.subscriptions.push(subOf(`${bkr.id}.Ctl`, bkr.id, g, 'control'))
+    c.ctls.push({ id: `${r.id}.CSWI1`, ied: r.id, breaker: bkr.id, gocb: g.id, rcb: rcb.id, ref: `${r.name}CTRL/CSWI1.Pos`, ctlModel: 'sbo-with-enhanced-security' })
+  }
+  return c
+}
+
 // RSTP: the process bus as two switches in a ring, PB1 (relays, test set) and
 // PB2 (breaker IEDs), joined by R1 (forwarding) and R2 (blocked by spanning
 // tree until R1 fails and the recovery time has passed).
@@ -194,7 +219,9 @@ function addGrandmasters(c) {
 
 export function stationConfig(config00) {
   // Time sync brings Sampled Values with it
-  const config0 = isActive(config00, 'timeSync') ? { ...config00, features: { ...config00.features, sampledValues: true } } : config00
+  // Controls bring MMS with them
+  const config0a = isActive(config00, 'controls') ? { ...config00, features: { ...config00.features, mms: true } } : config00
+  const config0 = isActive(config0a, 'timeSync') ? { ...config0a, features: { ...config0a.features, sampledValues: true } } : config0a
   // The transformer bay brings the second bay and Sampled Values with it; without
   // it, a fault set on the bus or the transformer falls back to line A–B
   const config = isActive(config0, 'transformerBay')
@@ -205,6 +232,7 @@ export function stationConfig(config00) {
   if (isActive(config, 'sampledValues')) base = addMergingUnits(base === config ? structuredClone(config) : base)
   if (isActive(config, 'timeSync')) base = addGrandmasters(base === config ? structuredClone(config) : base)
   if (isActive(config, 'mms')) base = addReports(base === config ? structuredClone(config) : base)
+  if (isActive(config, 'controls')) base = addControls(base)
   if (!isActive(config, 'redundancy')) return base
   const c = base === config ? structuredClone(config) : base
   if (config.network?.redundancy === 'rstp') return applyRSTP(c)

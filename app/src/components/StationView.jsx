@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { deviceColor, SUB_STATUS } from '../lib/colors'
-import { LINK_PRESETS, SUB_WRONG, IED_MODES, countFailures, linkPresetOf } from '../lib/scenario'
+import { LINK_PRESETS, SUB_WRONG, IED_MODES, countFailures, linkPresetOf, CONTROL_AT } from '../lib/scenario'
 import { parseEnd } from '../lib/network'
 import { isActive } from '../lib/features'
 import { HelpLink } from './Help'
@@ -266,7 +266,7 @@ function chipLabel(config, sub) {
   const g = config.gocbs.find(x => x.id === sub.gocb)
   if (g.label === 'Trip') return g.ied.startsWith('87B') ? '87B' : g.ied.startsWith('87') ? '87T' : 'Trip'
   if (g.label === 'BF trip') return `BF ${g.ied.slice(-2)}`
-  return g.label === 'Position' ? 'Pos' : g.label
+  return g.label === 'Position' ? 'Pos' : g.label === 'Control' ? 'Ctl' : g.label
 }
 function Chips({ x, y, maxW, items }) {
   let cx = x, cy = y
@@ -302,6 +302,7 @@ export default function StationView({ config, run, onFaultAt }) {
   const ringOn = config.switches.some(x => x.id === 'PB1')
   const sbPrp = config.switches.some(x => x.id === 'SBA')
   const mmsOn = (config.rcbs ?? []).length > 0
+  const ctlBkr = id => (config.ctls ?? []).some(c => c.breaker === id)
   const svOn = config.ieds.some(d => d.kind === 'mu')
   const three = config.ieds.some(d => d.id === '87B-A')
   const LAYOUT0 = (L => (sbPrp ? splitBus(L, 'SB') : L))((L => (prpOn ? splitPB(L) : ringOn ? splitRing(L) : L))(LAYOUTS[(narrow ? 'narrow' : 'wide') + (three ? '3' : (two ? '2' : '') + (svOn ? 'sv' : ''))]))
@@ -488,11 +489,21 @@ export default function StationView({ config, run, onFaultAt }) {
             const wideBox = b.w > 200
             const perRow = wideBox ? rel.length : 2
             const pp = state.prp?.[d.id]
+            // The operator's command, while one is under way or after it ended
+            const cmd = Object.entries(state.ctl ?? {}).find(([, v]) => v.phase !== 'idle')
+            const cmdLine = cmd && (() => {
+              const [rid, v] = cmd
+              const bk = config.ctls.find(c => c.ied === rid)?.breaker
+              const ph = { selecting: ['select…', '#d97706'], selected: ['selected', '#d97706'], operating: ['operating', '#d97706'], ending: ['operating', '#d97706'],
+                refused: ['refused', '#dc2626'], timeout: ['timed out', '#dc2626'], done: ['done ✓', '#16a34a'], failed: ['failed ✗', '#dc2626'] }[v.phase] ?? [v.phase, '#6b7280']
+              return { t: `${v.op} ${bk}: ${ph[0]}`, c: ph[1] }
+            })()
             return (
               <g key={d.id} {...selectable('ied', d.id)}>
                 <rect x={b.x} y={b.y} width={b.w} height={b.h} rx={8} fill="#fff" stroke={isSel('ied', d.id) ? '#4f46e5' : deviceColor(d.id)} strokeWidth={isSel('ied', d.id) ? 2.5 : 1.5} />
                 <text x={b.x + b.w / 2} y={b.y + 14} textAnchor="middle" fontSize={11} fontWeight="700" fill={deviceColor(d.id)}>{d.label}</text>
-                <text x={b.x + b.w / 2} y={b.y + 26} textAnchor="middle" fontSize={8.5} fill="#6b7280">MMS client{pp ? <>{' · PRP '}<tspan fill={pp.A === 'ok' ? '#16a34a' : '#dc2626'}>A{pp.A === 'ok' ? '✓' : '✗'}</tspan> <tspan fill={pp.B === 'ok' ? '#16a34a' : '#dc2626'}>B{pp.B === 'ok' ? '✓' : '✗'}</tspan></> : null}</text>
+                {cmdLine && b.h < 60 ? <text x={b.x + b.w / 2} y={b.y + 26} textAnchor="middle" fontSize={8.5} fontWeight="700" fill={cmdLine.c}>{cmdLine.t}</text> : <text x={b.x + b.w / 2} y={b.y + 26} textAnchor="middle" fontSize={8.5} fill="#6b7280">MMS client{pp ? <>{' · PRP '}<tspan fill={pp.A === 'ok' ? '#16a34a' : '#dc2626'}>A{pp.A === 'ok' ? '✓' : '✗'}</tspan> <tspan fill={pp.B === 'ok' ? '#16a34a' : '#dc2626'}>B{pp.B === 'ok' ? '✓' : '✗'}</tspan></> : null}</text>}
+                {cmdLine && b.h >= 60 && <text x={b.x + b.w / 2} y={b.y + b.h - 7} textAnchor="middle" fontSize={8.5} fontWeight="700" fill={cmdLine.c}>{cmdLine.t}</text>}
                 {rel.map((id, i) => {
                   const a = state.mms?.[id]?.assoc ?? 'up'
                   const col = i % perRow, row = Math.floor(i / perRow)
@@ -574,6 +585,7 @@ export default function StationView({ config, run, onFaultAt }) {
                     ) : (
                       <>
                         <Lamp x={b.x + 10} y={b.y + 38} on={s.coil} label="Trip coil" />
+                        {ctlBkr(d.id) && <Lamp x={b.x + 80} y={b.y + 38} on={s.closing} color="#16a34a" label="Close coil" />}
                         <rect x={b.x + 10} y={b.y + 46} width={10} height={10} fill={s.contactsClosed ? '#dc2626' : '#16a34a'} />
                         <text x={b.x + 24} y={b.y + 55} fontSize={10} fill="#374151">Breaker <tspan fontWeight="700">{s.contactsClosed ? 'CLOSED' : 'OPEN'}</tspan></text>
                       </>
@@ -593,6 +605,7 @@ export default function StationView({ config, run, onFaultAt }) {
               ) : (
                 <>
                   <Lamp x={b.x + 10} y={b.y + 44} on={s.coil} label="Trip coil" />
+                  {ctlBkr(d.id) && <Lamp x={b.x + 90} y={b.y + 44} on={s.closing} color="#16a34a" label="Close coil" />}
                   <g>
                     <rect x={b.x + 10} y={b.y + 55} width={10} height={10} fill={s.contactsClosed ? '#dc2626' : '#16a34a'} />
                     <text x={b.x + 24} y={b.y + 64} fontSize={10.5} fill="#374151">
@@ -602,7 +615,7 @@ export default function StationView({ config, run, onFaultAt }) {
                 </>
               )}
               {!compact && subs.map((x, i) => (
-                <SubBadge key={x.id} x={b.x + 10} y={b.y + 96 + i * 18}
+                <SubBadge key={x.id} x={b.x + 10} y={b.y + (d.kind === 'breaker' && subs.length > 1 ? 80 : 96) + i * 18}
                   label={`Sub ${config.gocbs.find(g => g.id === x.gocb).label}`} status={subOf(x.id)} />
               ))}
               {!compact && svSub(d.id) && (
@@ -823,6 +836,22 @@ function FailurePanel({ config, sel, scenario, setScenario, onClose }) {
           )
         })()}
         {ied.kind === 'hmi' && !(config.rcbs ?? []).length && <span className="text-gray-500">The gateway talks MMS to the IEDs and passes their data to SCADA. Turn on ⚙ MMS reports to simulate it; meanwhile, fail the station-bus switch to see that protection doesn’t depend on it.</span>}
+        {ied.kind === 'hmi' && (config.ctls ?? []).length > 0 && (() => {
+          const cur = scenario.control ? `${scenario.control.op}:${scenario.control.ied}` : ''
+          const set = v => setScenario(sc => ({ ...sc, control: v ? { op: v.split(':')[0], ied: v.split(':')[1], at: CONTROL_AT } : null }))
+          return (
+            <label className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 sm:gap-2">
+              <span>Operator command</span>
+              <select value={cur} onChange={e => set(e.target.value)} className="border border-gray-300 rounded px-2 py-1 bg-white">
+                <option value="">None</option>
+                {config.ctls.flatMap(c => ['close', 'open'].map(op => (
+                  <option key={`${op}:${c.ied}`} value={`${op}:${c.ied}`}>{op === 'close' ? 'Close' : 'Open'} {c.breaker} at {CONTROL_AT * 1000} ms (through {c.ied})</option>
+                )))}
+              </select>
+            </label>
+          )
+        })()}
+        {ied.kind === 'hmi' && (config.ctls ?? []).length > 0 && <span className="text-gray-500">Select before operate: the gateway selects the relay’s breaker control (CSWI), the operator confirms {(config.mms?.operatorS ?? 0.2) * 1000} ms later (illustrative), and the relay checks interlocking before it commands the breaker IED over GOOSE.</span>}
         {ied.kind === 'hmi' && (config.rcbs ?? []).length > 0 && <span className="text-gray-500">The gateway is an MMS client of every relay: it holds an association with each and receives their reports. It declares an association lost after {config.mms?.assocTimeoutS} s without an answer and reconnects {config.mms?.reconnectS} s after the path returns (illustrative). Fail a station-bus link to see it.</span>}
         {ied.kind === 'relay' && (config.rcbs ?? []).some(r => r.ied === ied.id) && (() => {
           const rcb = config.rcbs.find(r => r.ied === ied.id)

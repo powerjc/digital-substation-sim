@@ -8,6 +8,11 @@ import { deviceColor } from '../lib/colors'
 const POS = { on: 'closed', off: 'open', intermediate: 'moving', bad: 'bad' }
 const val = (signal, v) => (v === null || v === undefined ? '—' : signal === 'pos' ? POS[v] ?? v : v ? 'TRIP' : 'off')
 const HOW = { onTime: 'on time', tcp: 'TCP retransmission', buffer: 'from the buffer', lost: 'never reported' }
+const CTL_TEXT = {
+  Select: 'Select (SBOw)', 'Select+': 'Select confirmed', 'Select−': 'Select refused',
+  Operate: 'Operate', 'Operate+': 'Operate accepted', 'Operate−': 'Operate refused',
+  'CmdTerm+': 'Command termination: done', 'CmdTerm−': 'Command termination: failed',
+}
 const ASSOC = {
   up: { t: 'associated', c: 'text-green-700' },
   connecting: { t: 'reconnecting', c: 'text-amber-700 font-semibold' },
@@ -19,6 +24,7 @@ export default function ScadaPanel({ config, run }) {
   const rcbs = config.rcbs ?? []
   const reports = (sim.reports ?? []).filter(r => r.tSent <= time + 1e-9)
   const shown = reports.slice(-8)
+  const ctlShown = (sim.controls ?? []).filter(m => m.tSent <= time + 1e-9)
   return (
     <div className="flex flex-col gap-3 text-sm max-w-5xl">
       <div className="overflow-x-auto">
@@ -101,6 +107,40 @@ export default function ScadaPanel({ config, run }) {
           </table>
         )}
       </div>
+      {(config.ctls ?? []).length > 0 && (
+        <div>
+          <div className="text-xs text-gray-500 mb-1">Operator command (select before operate)</div>
+          {!ctlShown.length && <div className="text-xs text-gray-400">{run.scenario?.control ? `The command starts at ${fmtTime(run.scenario.control.at)}.` : 'No command in this run: tap the gateway to give one.'}</div>}
+          {ctlShown.length > 0 && (
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left text-gray-500 border-b border-gray-200">
+                  <th className="py-0.5 pr-2 font-medium">Sent</th>
+                  <th className="py-0.5 pr-2 font-medium">Message</th>
+                  <th className="py-0.5 pr-2 font-medium">From → to</th>
+                  <th className="py-0.5 font-medium">Received</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ctlShown.map(m => {
+                  const got = m.tRx !== null && m.tRx <= time + 1e-9
+                  const c = /−/.test(m.kind) ? 'text-red-700' : /\+/.test(m.kind) ? 'text-green-700' : 'text-blue-700'
+                  return (
+                    <tr key={m.no} className="border-b border-gray-50">
+                      <td className="py-0.5 pr-2 whitespace-nowrap">{fmtTime(m.tSent)}</td>
+                      <td className={`py-0.5 pr-2 font-semibold ${c}`}>{CTL_TEXT[m.kind] ?? m.kind}{m.cause ? <span className="font-normal"> ({m.cause})</span> : null}</td>
+                      <td className="py-0.5 pr-2 whitespace-nowrap">{m.from} → {m.to}</td>
+                      <td className={`py-0.5 whitespace-nowrap ${got ? 'text-gray-800' : m.fate === 'lost' ? 'text-red-700 font-semibold' : 'text-gray-400'}`}>
+                        {got ? `${fmtTime(m.tRx)}${m.fate === 'tcp' ? ' (TCP retransmission)' : ''}` : m.fate === 'lost' ? 'never: association lost' : m.fate === 'tcp' ? 'TCP retransmitting' : 'in flight'}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
       <p className="text-xs text-gray-400">
         Each relay sends a report when a value changes; the gateway passes it on to SCADA with the relay’s own time stamp. A buffered report keeps changes while the association is down and sends them when it returns; an unbuffered one doesn’t. After reconnecting, the gateway reads every value again (general interrogation). Server and timeout figures are illustrative.
       </p>

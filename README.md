@@ -4,7 +4,7 @@ An interactive, browser-based training simulator for the digital substation: how
 
 Companion to the Line Protection Simulator, which answers "the relay tripped at 17 ms, and here is why". This one answers "and here is how that trip travelled over the network".
 
-**Status:** in development. Bay simulator: GOOSE in one bay, plus (behind ⚙) test mode with a test set, a second bay with breaker failure, a redundant process bus (PRP or RSTP), Sampled Values, a transformer bay with transformer and bus differential, time sync (PTP), and MMS reports to the gateway (with PRP on the station bus). Foundations: Parts A–E. See `SPEC.md`.
+**Status:** in development. Bay simulator: GOOSE in one bay, plus (behind ⚙) test mode with a test set, a second bay with breaker failure, a redundant process bus (PRP or RSTP), Sampled Values, a transformer bay with transformer and bus differential, time sync (PTP), MMS reports to the gateway (with PRP on the station bus), and MMS controls (select before operate). Foundations: Parts A–E. See `SPEC.md`.
 
 ## What it shows
 
@@ -14,7 +14,7 @@ Companion to the Line Protection Simulator, which answers "the relay tripped at 
 - **Failures to inject:** link down (fixed presets), one lost frame, a subscription engineered with the wrong APPID, gocbRef, dataset or confRev, a switch port missing the VLAN.
 - **Outcome:** transfer time against the 3 ms class for trip messages (IEC 61850-5, TT6), breaker open time, and which alarms warned, and when.
 - **Lessons:** *A trip is a message*, *The relay tripped, but the breaker never heard it*, *One lost frame, and a dead link*; *The relay was left in test*, *Left in simulation mode*; *Breaker failure: the neighbours clear it*, *A lost trip, saved by breaker failure*, *One switch, two bays*, *Right in one bay, missing in the other*; *Two networks: nothing lost*, *RSTP: “the network recovered in 50 ms”*; *The CT wiring is a stream*, *No samples, no protection*; *Bus differential: one message, every breaker*, *One clock lost, the whole bus unprotected*, *Transformer differential: both sides or nothing*; *No GPS, still one clock*, *The grandmaster fails: a gap with no differential*; *SCADA hears it second*, *The station bus drops: SCADA catches up*, *Unbuffered: the trip SCADA never saw*, *PRP on the station bus*. A tour explains the screen.
-- **⚙ options:** network detail; MMS reports to the gateway (buffered reports, association supervision, general interrogation, a SCADA view of what the operator sees; with PRP the station bus is doubled too); time sync (two PTP grandmasters: GPS loss, holdover, failover); transformer bay A–T with 87T and bus differential 87B (fault on the line, the bus or the transformer); Sampled Values (a merging unit per line bay; the relay measures from the stream); test mode (on / test / test/blocked per IED, simulation mode, and a test set publishing simulated GOOSE); a second bay (line A–X) with breaker failure, a stuck breaker and switch failures; a redundant process bus (PRP with LAN A and LAN B, or an RSTP ring).
+- **⚙ options:** network detail; MMS reports to the gateway (buffered reports, association supervision, general interrogation, a SCADA view of what the operator sees; with PRP the station bus is doubled too); MMS controls (the operator opens or closes a breaker: select before operate through the relay’s CSWI, interlocking on the GOOSE position, a Control GOOSE to the breaker IED, command termination); time sync (two PTP grandmasters: GPS loss, holdover, failover); transformer bay A–T with 87T and bus differential 87B (fault on the line, the bus or the transformer); Sampled Values (a merging unit per line bay; the relay measures from the stream); test mode (on / test / test/blocked per IED, simulation mode, and a test set publishing simulated GOOSE); a second bay (line A–X) with breaker failure, a stuck breaker and switch failures; a redundant process bus (PRP with LAN A and LAN B, or an RSTP ring).
 - **Foundations:** 25 short chapters from the copper you know to the network (A), IEC 61850 messaging (B), virtual wiring in ANSI / IEEE terms (C), configuration and SCL (D), and time (E), each with a figure that runs the simulator's own engine; a 90-term glossary.
 
 ## Model notes and limits
@@ -24,8 +24,8 @@ Companion to the Line Protection Simulator, which answers "the relay tripped at 
 - Deterministic: no random loss, jitter or background traffic. VLAN priority is shown and explained but has no effect without competing traffic.
 - Sampled Values are synthesized from phasors (no DC offset or transients) and not simulated sample by sample on the network.
 - Time sync is modelled at the level of grandmaster states and each merging unit's smpSynch, not PTP message by message.
-- MMS is modelled as reports from the relays to the gateway (association, buffered / unbuffered, general interrogation), not message by message; no controls (select-before-operate) yet.
-- Not yet: MMS controls, HSR, SCL configuration files.
+- MMS is modelled as reports from the relays to the gateway (association, buffered / unbuffered, general interrogation), not message by message. Controls are select before operate with enhanced security only, at a fixed time (500 ms); with a command in the run, a line fault is transient and goes out when its breaker opens.
+- Not yet: HSR, SCL configuration files.
 
 ## Run
 

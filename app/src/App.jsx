@@ -201,7 +201,7 @@ export default function App() {
 
         {station.rcbs?.length > 0 && (
           <Card id="scada" flash={flash} spot={spot} className="p-4 min-w-0">
-            <h3 className="text-sm font-semibold text-gray-700 mb-2">SCADA view: MMS reports to the gateway<HelpLink chapter="B1" /></h3>
+            <h3 className="text-sm font-semibold text-gray-700 mb-2">SCADA view: MMS {station.ctls?.length ? "reports and commands" : "reports to the gateway"}<HelpLink chapter="B1" /></h3>
             <ScadaPanel config={run.sim.config} run={run} />
           </Card>
         )}

@@ -6,7 +6,7 @@
 // Units: protection-relevant times in cycles (as the Line Protection
 // Simulator); communication times in ms; network in Mbit/s and µs.
 
-export const SCHEMA_VERSION = 9
+export const SCHEMA_VERSION = 10
 
 // Retransmission profiles. IEC 61850-8-1 leaves the curve to the
 // implementation; these are illustrative. Each frame's timeAllowedtoLive is
@@ -39,6 +39,7 @@ export function defaultConfig() {
       auxSettleMs: 5,       // contacts parted → Pos reads "off"
       bfCycles: 8,          // breaker failure: trip → BF trip if current still flows (illustrative)
       svLossMs: 1,          // relay declares an SV stream lost after this long without new samples (illustrative)
+      breakerCloseCycles: 5, // close coil → main contacts make (illustrative)
     },
     // The scripted fault: where it is ('AB' / 'AX' line, 'BUSA' bus A, 'XFMRAT'
     // transformer A–T). The relay whose zone it is in (`protects`, else `line`) trips.
@@ -59,8 +60,10 @@ export function defaultConfig() {
     // MMS (feature mms), all illustrative: a relay's report leaves serverMs after
     // the data changed; the gateway declares an association lost after
     // assocTimeoutS without an answer and re-establishes it reconnectS after the
-    // path returns.
-    mms: { serverMs: 5, assocTimeoutS: 1, reconnectS: 0.3 },
+    // path returns. Controls (feature controls): the operator confirms operatorS
+    // after the select is confirmed; the relay ends a command that has not
+    // reached its position operTimeoutS after the operate.
+    mms: { serverMs: 5, assocTimeoutS: 1, reconnectS: 0.3, operatorS: 0.2, operTimeoutS: 1 },
 
     ieds: [
       { id: '21-AB', kind: 'relay', bay: 'AB', line: 'AB', name: 'LineProtAB', label: 'Line relay',
@@ -111,12 +114,14 @@ export function defaultConfig() {
       { id: '21-AB.Pos', ied: '21-AB', gocb: 'AB.Pos', use: 'breakerPos',
         expect: { mac: '01-0C-CD-01-00-02', appid: 0x0102, gocbRef: 'BkrCtlABCTRL/LLN0$GO$Pos', datSet: 'BkrCtlABCTRL/LLN0$DS_Pos', confRev: 1 } },
     ],
-    features: { networkDetail: false, testMode: false, secondBay: false, redundancy: false, sampledValues: false, transformerBay: false, timeSync: false, mms: false },
+    features: { networkDetail: false, testMode: false, secondBay: false, redundancy: false, sampledValues: false, transformerBay: false, timeSync: false, mms: false, controls: false },
   }
 }
 
 // One step per schema version.
 const MIGRATIONS = {
+  // v9 → v10: MMS controls, breaker close time
+  9: cfg => ({ ...cfg, version: 10, timing: { breakerCloseCycles: 5, ...cfg.timing }, mms: { operatorS: 0.2, operTimeoutS: 1, ...cfg.mms }, features: { controls: false, ...cfg.features } }),
   // v8 → v9: MMS on the station bus
   8: cfg => ({ ...cfg, version: 9, mms: cfg.mms ?? { serverMs: 5, assocTimeoutS: 1, reconnectS: 0.3 }, features: { mms: false, ...cfg.features } }),
   // v7 → v8: time sync feature and PTP figures

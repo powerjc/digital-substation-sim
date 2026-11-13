@@ -7,6 +7,7 @@ export const FEATURES = [
   { id: 'transformerBay', label: 'Transformer bay and bus differential', help: 'Adds the transformer tap A–T (87T with HV and LV merging units) and bus differential 87B on bus A. Includes the second bay and Sampled Values.' },
   { id: 'timeSync', label: 'Time sync (PTP grandmasters)', help: 'Two GPS grandmaster clocks on the process bus; the merging units follow them. Fail one, lose GPS, and watch smpSynch. Includes Sampled Values.' },
   { id: 'mms', label: 'MMS reports to the gateway', help: 'Each relay reports its trip, breaker failure and breaker position to the gateway / HMI over the station bus (MMS buffered reports). Fail the station bus and watch what SCADA sees. With PRP, the station bus is doubled too.' },
+  { id: 'controls', label: 'MMS controls (operate a breaker)', help: 'The operator opens or closes a breaker from SCADA: select before operate, through the relay’s CSWI, on to the breaker IED over GOOSE, with interlocking. Tap the gateway to give a command. Includes MMS reports.' },
   { id: 'redundancy', label: 'Redundant process bus', help: 'PRP: two independent networks, every frame sent on both (the station bus too, with MMS on). RSTP: one network with a ring link on standby that takes over after a failure.' },
   { id: 'secondBay', label: 'Second bay and breaker failure', help: 'Line A–X on the same bus, its own switch, and breaker failure trips between the bays.' },
 ]

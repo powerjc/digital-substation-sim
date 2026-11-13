@@ -51,6 +51,7 @@ function buildRows(config, simCfg) {
     const rcb = (config.rcbs ?? []).find(r => r.ied === d.id)
     if (rcb) {
       prpRow.push({ key: `${g}-mms`, label: 'MMS report', type: 'mms', ied: g, group: g })
+      if ((config.ctls ?? []).some(c => c.ied === d.id)) prpRow.push({ key: `${g}-ctl`, label: 'MMS control', type: 'ctl', ied: g, group: g })
       if (sbPrp) prpRow.push({ key: `${g}-prpS`, label: 'PRP station', type: 'prp', ied: `${g}@S`, group: g })
     }
     if (d.kind === 'relay') {
@@ -61,6 +62,7 @@ function buildRows(config, simCfg) {
     } else {
       rows.push(...subRows, ...prpRow)
       rows.push({ key: `${g}-coil`, label: 'Trip coil', type: 'digital', color, fn: s => s.ieds[g].coil, group: g })
+      if ((config.ctls ?? []).some(c => c.breaker === d.id)) rows.push({ key: `${g}-close`, label: 'Close coil', type: 'digital', color: '#16a34a', fn: s => !!s.ieds[g].closing, group: g })
       rows.push({ key: `${g}-52`, label: 'Breaker closed', type: 'digital', color: '#6b7280', fn: s => s.ieds[g].contactsClosed, group: g, breaker: true })
       rows.push(...pubRows)
     }
@@ -240,6 +242,35 @@ export default function TimingChart({ config, run, selectedFrame, onSelectFrame,
                 </g>
               )
             }
+            if (r.type === 'ctl') {
+              // The command under way (amber band), and each control message: sent (tick), received (dot)
+              const segs = segments(events, t0, t1, s => s.ctl?.[r.ied]?.phase ?? 'idle').filter(s => s.t0 <= now && !['idle', 'done', 'failed'].includes(s.v)).map(s => ({ ...s, t1: Math.min(s.t1, now) }))
+              const msgs = (sim.controls ?? []).filter(x => x.ied === r.ied && x.tSent >= t0 && x.tSent <= Math.min(t1, now + 1e-9))
+              const SHORT = { Select: 'Sel', 'Select+': 'Sel+', 'Select−': 'Sel−', Operate: 'Op', 'Operate+': 'Op+', 'Operate−': 'Op−', 'CmdTerm+': 'CT+', 'CmdTerm−': 'CT−' }
+              const colOf = k => (/−/.test(k) ? '#dc2626' : /\+/.test(k) ? '#16a34a' : '#2563eb')
+              return (
+                <g key={r.key}>
+                  {label}
+                  {segs.map((s, i) => <rect key={i} x={tx(s.t0)} y={hi} width={Math.max(0, tx(s.t1) - tx(s.t0))} height={lo - hi} fill="#d97706" fillOpacity={0.15} />)}
+                  {msgs.map((x, i) => {
+                    const xs = tx(x.tSent), c = colOf(x.kind)
+                    const xr = x.tRx !== null && x.tRx <= now + 1e-9 && x.tRx <= t1 ? tx(x.tRx) : null
+                    const room = (msgs[i + 1] ? tx(msgs[i + 1].tSent) : tx(t1)) - xs
+                    if (x.fate === 'lost' && x.tRx === null && now >= x.tSent) {
+                      return <g key={x.no}><line x1={xs} y1={hi} x2={xs} y2={lo} stroke={c} strokeWidth={1.5} />{room > 24 && <text x={xs + 3} y={lo - 2} fontSize={8.5} fontWeight="700" fill="#dc2626">{SHORT[x.kind]} ✗</text>}</g>
+                    }
+                    return (
+                      <g key={x.no}>
+                        <line x1={xs} y1={hi} x2={xs} y2={lo} stroke={c} strokeWidth={1.5} />
+                        {xr !== null && Math.abs(xr - xs) > 3 && <line x1={xs} y1={(hi + lo) / 2} x2={xr} y2={(hi + lo) / 2} stroke={c} strokeWidth={1} strokeDasharray="2 2" />}
+                        {xr !== null && <circle cx={xr} cy={(hi + lo) / 2} r={2.5} fill={c} />}
+                        {room > 22 && <text x={Math.max(xs, xr ?? xs) + 4} y={lo - 2} fontSize={8.5} fontWeight="700" fill={c}>{SHORT[x.kind]}</text>}
+                      </g>
+                    )
+                  })}
+                </g>
+              )
+            }
             if (r.type === 'status') {
               const segs = segments(events, t0, t1, s => (r.sv ? s.sv?.[r.sub]?.status ?? 'healthy' : s.subs[r.sub]?.status ?? 'none')).filter(s => s.t0 <= now).map(s => ({ ...s, t1: Math.min(s.t1, now) }))
               return (
@@ -295,6 +326,7 @@ export default function TimingChart({ config, run, selectedFrame, onSelectFrame,
         <span style={{ color: FATE.ignored.color }}>■</span> ignored · <span style={{ color: FATE.rejected.color }}>■</span> rejected ·{' '}
         <span style={{ color: FATE.lost.color }}>■</span> lost. Labels are stNum/sqNum. Tap a tick to decode it; tap elsewhere to jump in time.
         {(config.rcbs ?? []).length > 0 && <> MMS: <span style={{ color: '#7c3aed' }}>|</span> report sent, <span style={{ color: '#7c3aed' }}>●</span> received by the gateway, <span style={{ color: '#dc2626' }}>×</span> never reported.</>}
+        {(config.ctls ?? []).length > 0 && <> Control: <span style={{ color: '#2563eb' }}>Sel</span> / <span style={{ color: '#2563eb' }}>Op</span> from the gateway, <span style={{ color: '#16a34a' }}>+</span> / <span style={{ color: '#dc2626' }}>−</span> the relay’s answer, CT command termination.</>}
       </p>
     </div>
   )

@@ -84,8 +84,8 @@ export function simulate(baseConfig, scenarioIn) {
   // ── State ──
   const ieds = {}
   for (const d of cfg.ieds) {
-    ieds[d.id] = d.kind === 'relay' ? { trip: false, bf: false, seenPos: null }
-      : d.kind === 'breaker' ? { pos: 'on', coil: false, contactsClosed: true, tripIn: null }
+    ieds[d.id] = d.kind === 'relay' ? { trip: false, bf: false, seenPos: null, ...((cfg.ctls ?? []).some(c => c.ied === d.id) ? { opnCmd: false, clsCmd: false } : {}) }
+      : d.kind === 'breaker' ? { pos: 'on', coil: false, contactsClosed: true, tripIn: null, closing: false }
       : d.kind === 'testset' ? { trip: false, pos: 'on', bf: false }
       : {}
   }
@@ -170,12 +170,18 @@ export function simulate(baseConfig, scenarioIn) {
   }
   for (const rcb of rcbs) {
     const up = mmsTransit(rcb, WARM_T) !== null
-    rcbSt[rcb.id] = { assoc: up ? 'up' : 'lost', queued: [], buffer: [], seq: 0, downSince: up ? null : WARM_T, everUp: up }
+    rcbSt[rcb.id] = { assoc: up ? 'up' : 'lost', queued: [], buffer: [], pend: [], seq: 0, downSince: up ? null : WARM_T, everUp: up }
     mms[rcb.ied] = { assoc: up ? 'up' : 'lost', queued: 0, buffered: 0, unbuffered: !rcb.buffered }
     scada[rcb.ied] = up ? { trip: false, bf: false, pos: null, t: null, stale: false } : { trip: null, bf: null, pos: null, t: null, stale: true }
   }
 
-  const snapshot = () => structuredClone({ fault, ieds, subs, prp, sv, mms, scada, ptp: ptpNow, pubs: Object.fromEntries(Object.entries(pubs).map(([k, p]) => [k, { stNum: p.stNum, sqNum: p.sqNum }])) })
+  // MMS controls (feature controls): the gateway operates a breaker through the
+  // relay's CSWI, select before operate; the relay commands the breaker IED over GOOSE
+  const ctls = cfg.ctls ?? []
+  const ctl = Object.fromEntries(ctls.map(c => [c.ied, { phase: 'idle', op: null, cause: null }])) // in snapshots
+  const ctlMsgs = []
+
+  const snapshot = () => structuredClone({ fault, ieds, subs, prp, sv, mms, scada, ctl, ptp: ptpNow, pubs: Object.fromEntries(Object.entries(pubs).map(([k, p]) => [k, { stNum: p.stNum, sqNum: p.sqNum }])) })
   const log = (t, kind, text, dev = null, extra = {}) => {
     if (t >= START_T - EPS) events.push({ t, kind, text, dev, ...extra, state: snapshot() })
   }
@@ -362,6 +368,18 @@ export function simulate(baseConfig, scenarioIn) {
       if (pos !== was) mmsChange(sub.ied, 'pos', t)
       const pub = cfg.gocbs.find(x => x.id === sub.gocb).ied
       log(t, 'seen', `${sub.ied} sees ${pub} ${DBPOS_TEXT[pos] ?? pos}`, sub.ied)
+      ctlPosSeen(sub.ied, pos, t)
+    }
+    // A control command from the relay's CSWI (feature controls)
+    if (sub.use === 'control') {
+      const val = ref => !!frame.pdu.allData.find(d => d.ref.endsWith(ref))?.value
+      const g = cfg.gocbs.find(x => x.id === sub.gocb)
+      const opn = val('OpOpn.general'), cls = val('OpCls.general')
+      if ((opn && st.contactsClosed && !st.coil) || (cls && !st.contactsClosed && !st.closing)) {
+        if (iedById(cfg, sub.ied).mode === 'test/blocked') log(t, 'blocked', `${sub.ied} (test/blocked) processes the ${opn ? 'open' : 'close'} command but its output stays blocked`, sub.ied)
+        else if (opn) energizeCoil(sub.ied, t, g)
+        else closeBreaker(sub.ied, t, g)
+      }
     }
   }
 
@@ -369,7 +387,7 @@ export function simulate(baseConfig, scenarioIn) {
   function energizeCoil(bkr, t, g) {
     const st = ieds[bkr]
     st.coil = true
-    log(t, 'coil', `${bkr} energizes the trip coil${g && g.label !== 'Trip' ? ` (${g.label} from ${g.ied})` : ''}`, bkr)
+    log(t, 'coil', `${bkr} energizes the trip coil${g && g.label !== 'Trip' ? ` (${g.label === 'Control' ? 'open command' : g.label} from ${g.ied})` : ''}`, bkr)
     if (scenario.breakerStuck.includes(bkr)) {
       log(t, 'stuck', `${bkr}: the trip coil is energized but the breaker does not move (stuck mechanism)`, bkr)
       return
@@ -384,6 +402,12 @@ export function simulate(baseConfig, scenarioIn) {
       st.contactsClosed = false
       st.coil = false
       log(tOpen, 'open', `${bkr} main contacts part: breaker open, trip coil de-energized`, bkr)
+      // With an operator command in the run, a line fault is transient: it goes
+      // out once its own breakers are open (the far end is not modelled)
+      if (fault && scenario.control && faultBkrs().length && faultBkrs().every(b => !ieds[b].contactsClosed)) {
+        fault = false
+        log(tOpen, 'faultGone', `The fault goes out with the line de-energized: a transient fault (the far end is not modelled)`, null)
+      }
       // A relay's trip resets once every breaker its trip message opens is open (the current is gone)
       const tripsOf = rid => cfg.subscriptions.filter(s => s.use === 'tripCoil' && cfg.gocbs.find(g => g.id === s.gocb && g.ied === rid && g.entries.some(e => e.signal === 'trip'))).map(s => s.ied)
       for (const r of cfg.ieds.filter(d => d.kind === 'relay' && ieds[d.id].trip && tripsOf(d.id).includes(bkr) && tripsOf(d.id).every(b => !ieds[b].contactsClosed))) {
@@ -400,6 +424,35 @@ export function simulate(baseConfig, scenarioIn) {
       st.pos = 'off'
       log(tOff, 'pos', `${bkr} position: open`, bkr)
       dataChanged(bkr, 'pos', tOff)
+    })
+  }
+
+  // Closing: close coil, contacts make after the close time, then the position follows
+  function closeBreaker(bkr, t, g) {
+    const st = ieds[bkr]
+    st.closing = true
+    log(t, 'closeCoil', `${bkr} energizes the close coil (close command from ${g.ied})`, bkr)
+    if (scenario.breakerStuck.includes(bkr)) {
+      log(t, 'stuck', `${bkr}: the close coil is energized but the breaker does not move (stuck mechanism)`, bkr)
+      return
+    }
+    const tm = t + T.auxMoveMs / 1000
+    q.push(tm, () => {
+      st.pos = 'intermediate'
+      log(tm, 'pos', `${bkr} position: intermediate (mechanism moving)`, bkr)
+      dataChanged(bkr, 'pos', tm)
+    })
+    const tc = t + (T.breakerCloseCycles ?? 5) / f
+    q.push(tc, () => {
+      st.contactsClosed = true
+      st.closing = false
+      log(tc, 'close', `${bkr} main contacts make: breaker closed, close coil de-energized`, bkr)
+    })
+    const tOn = tc + T.auxSettleMs / 1000
+    q.push(tOn, () => {
+      st.pos = 'on'
+      log(tOn, 'pos', `${bkr} position: closed`, bkr)
+      dataChanged(bkr, 'pos', tOn)
     })
   }
 
@@ -464,6 +517,10 @@ export function simulate(baseConfig, scenarioIn) {
     }
     syncMms(rcb)
     log(t, 'mmsLost', `${rcb.client}: no answer from ${rcb.ied} for ${M.assocTimeoutS} s, association lost. SCADA shows ${rcb.ied}'s data as not current. Alarm.${extra}`, rcb.client, { rcb: rcb.id, ied: rcb.ied })
+    for (const p of m.pend) p.rec.fate = 'lost'
+    m.pend = []
+    const c = ctls.find(x => x.rcb === rcb.id)
+    if (c && ['selecting', 'selected', 'operating'].includes(ctl[c.ied].phase)) ctlEnd(c, t, 'failed', 'association lost', `${rcb.client}: the ${ctl[c.ied].op} command to ${c.breaker} fails with the association: ${ctl[c.ied].phase === 'operating' ? 'no command termination received, the result is not known' : 'it never operated'}`)
   }
   function reconnect(rcb, t) {
     const m = rcbSt[rcb.id]
@@ -485,6 +542,120 @@ export function simulate(baseConfig, scenarioIn) {
       log(tg, 'gi', `${rcb.client}: general interrogation of ${rcb.ied}, SCADA shows ${rcb.items.map(it => `${it.label} ${VAL_TEXT(it.signal, sc[it.signal])}`).join(', ')}`, rcb.client, { rcb: rcb.id, ied: rcb.ied })
     })
   }
+  // ── MMS controls ──
+  const serverS = M.serverMs / 1000
+  const OP = { open: 'open', close: 'close' }
+  const ctlTarget = op => (op === 'close' ? 'on' : 'off')
+  // Network time of one control message from the gateway down to the relay, or null
+  const mmsTransitDown = (rcb, t) => {
+    const r = forward(topo, cfg, scenario, { pub: rcb.client, gocb: rcb.id, dst: iedById(cfg, rcb.ied).mac, vlan: { id: portVlan(rcb.client, null), priority: 0 }, length: 200, pdu: { stNum: 0, sqNum: 0 }, port: null }, t)
+    const a = r.arrivals.filter(x => x.ied === rcb.ied).sort((x, y) => x.t - y.t)[0]
+    return a ? a.t - t : null
+  }
+  // One MMS control message on the association; TCP holds it while there is no path
+  function ctlSend(c, kind, t, onArrive, extra = {}) {
+    const rcb = rcbs.find(r => r.id === c.rcb)
+    const m = rcbSt[rcb.id]
+    const down = !/[+−]/.test(kind)
+    const rec = { no: ctlMsgs.length + 1, ied: c.ied, kind, from: down ? rcb.client : c.ied, to: down ? c.ied : rcb.client, tSent: t, tRx: null, fate: 'onTime', ...extra }
+    ctlMsgs.push(rec)
+    const go = ta => { rec.tRx = ta; onArrive(ta) }
+    const tr = down ? mmsTransitDown(rcb, t) : mmsTransit(rcb, t)
+    if (tr !== null) q.push(t + tr, () => go(t + tr))
+    else { rec.fate = 'tcp'; m.pend.push({ rec, go }) }
+    return rec
+  }
+  function ctlEnd(c, t, phase, cause, text) {
+    const s = ctl[c.ied]
+    s.phase = phase
+    s.cause = cause
+    for (const sig of ['opnCmd', 'clsCmd']) if (ieds[c.ied][sig]) { ieds[c.ied][sig] = false; dataChanged(c.ied, sig, t) }
+    log(t, phase === 'done' ? 'ctlDone' : 'ctlFail', text, rcbs.find(r => r.id === c.rcb).client, { ied: c.ied })
+  }
+  // What the relay checks before it lets a command through
+  function ctlCheck(c, op, stage) {
+    const d = iedById(cfg, c.ied)
+    if (d.mode === 'test' || d.mode === 'test/blocked') return { cause: 'Blocked-by-Mode', why: `${c.ied} is in ${d.mode} and the command is not a test command` }
+    const pos = ieds[c.ied].seenPos
+    if (stage === 'select') return pos === ctlTarget(op) ? { cause: 'Position-reached', why: `${c.breaker} is already ${DBPOS_TEXT[pos]}` } : null
+    const sub = cfg.subscriptions.find(s => s.ied === c.ied && s.use === 'breakerPos')
+    const s = sub && subs[sub.id]
+    if (!s || s.status !== 'healthy') return { cause: 'Blocked-by-interlocking', why: `${c.ied} has no valid position of ${c.breaker}: its Position GOOSE subscription is in alarm (${s?.reason ?? 'not configured'}), so the interlocking cannot release` }
+    if (op === 'close' && ieds[c.ied].trip) return { cause: 'Blocked-by-interlocking', why: `${c.ied}'s trip is still active` }
+    if (!['on', 'off'].includes(pos)) return { cause: 'Blocked-by-interlocking', why: `${c.breaker} position is ${DBPOS_TEXT[pos] ?? pos}` }
+    return null
+  }
+  function ctlStart(c, op, t) {
+    const rcb = rcbs.find(r => r.id === c.rcb)
+    const s = ctl[c.ied]
+    s.op = op
+    if (rcbSt[rcb.id].assoc !== 'up') {
+      ctlEnd(c, t, 'failed', 'no association', `Operator: ${op} ${c.breaker}. ${rcb.client} cannot send it: no association with ${c.ied}`)
+      return
+    }
+    s.phase = 'selecting'
+    log(t, 'ctl', `Operator: ${op} ${c.breaker}. ${rcb.client} sends Select with value (SBOw, ${op}) to ${c.ied} CSWI1`, rcb.client, { ied: c.ied })
+    ctlSend(c, 'Select', t, ta => {
+      const tr = ta + serverS
+      q.push(tr, () => {
+        const bad = ctlCheck(c, op, 'select')
+        if (bad) {
+          ctlSend(c, 'Select−', tr, tg => ctlEnd(c, tg, 'failed', bad.cause, `${rcb.client}: Select refused by ${c.ied} (${bad.cause}): ${bad.why}. Nothing operated`), { cause: bad.cause })
+          return
+        }
+        s.phase = 'selected'
+        log(tr, 'ctl', `${c.ied}: CSWI1 selected for ${op}, waiting for Operate`, c.ied)
+        ctlSend(c, 'Select+', tr, tg => {
+          const to = tg + (M.operatorS ?? 0.2)
+          log(tg, 'ctl', `${rcb.client}: Select confirmed by ${c.ied}. The operator confirms the ${op}`, rcb.client, { ied: c.ied })
+          q.push(to, () => {
+            if (ctl[c.ied].phase !== 'selected') return
+            log(to, 'ctl', `${rcb.client} sends Operate (${op}) to ${c.ied}`, rcb.client, { ied: c.ied })
+            ctlSend(c, 'Operate', to, ta2 => ctlOperate(c, op, ta2))
+          })
+        })
+      })
+    })
+  }
+  function ctlOperate(c, op, t) {
+    const rcb = rcbs.find(r => r.id === c.rcb)
+    const tr = t + serverS
+    q.push(tr, () => {
+      const bad = ctlCheck(c, op, 'operate')
+      if (bad) {
+        log(tr, 'ctlRefused', `${c.ied}: Operate refused (${bad.cause}): ${bad.why}`, c.ied)
+        ctl[c.ied].phase = 'refused'
+        ctlSend(c, 'Operate−', tr, tg => ctlEnd(c, tg, 'failed', bad.cause, `${rcb.client}: Operate refused by ${c.ied} (${bad.cause}). ${c.breaker} not operated`), { cause: bad.cause })
+        return
+      }
+      ctl[c.ied].phase = 'operating'
+      const sig = op === 'close' ? 'clsCmd' : 'opnCmd'
+      ieds[c.ied][sig] = true
+      log(tr, 'ctl', `${c.ied}: interlocking released, Operate accepted. ${op === 'close' ? 'Close' : 'Open'} command to ${c.breaker} over GOOSE (CSWI1.${op === 'close' ? 'OpCls' : 'OpOpn'})`, c.ied)
+      dataChanged(c.ied, sig, tr)
+      ctlSend(c, 'Operate+', tr, tg => log(tg, 'ctl', `${rcb.client}: Operate accepted by ${c.ied}, waiting for the breaker`, rcb.client, { ied: c.ied }))
+      const tl = tr + (M.operTimeoutS ?? 1)
+      q.push(tl, () => {
+        if (ctl[c.ied].phase !== 'operating') return
+        ctl[c.ied].phase = 'timeout'
+        for (const sg of ['opnCmd', 'clsCmd']) if (ieds[c.ied][sg]) { ieds[c.ied][sg] = false; dataChanged(c.ied, sg, tl) }
+        log(tl, 'ctlRefused', `${c.ied}: ${c.breaker} did not reach ${DBPOS_TEXT[ctlTarget(op)]} within ${M.operTimeoutS ?? 1} s: command ended (Time-limit-over)`, c.ied)
+        ctlSend(c, 'CmdTerm−', tl, tg => ctlEnd(c, tg, 'failed', 'Time-limit-over', `${rcb.client}: command termination from ${c.ied}: the ${op} of ${c.breaker} failed (Time-limit-over)`), { cause: 'Time-limit-over' })
+      })
+    })
+  }
+  // The relay's CSWI watches the position it commanded
+  function ctlPosSeen(relay, pos, t) {
+    const c = ctls.find(x => x.ied === relay)
+    const s = c && ctl[relay]
+    if (!s || s.phase !== 'operating' || pos !== ctlTarget(s.op)) return
+    s.phase = 'ending'
+    for (const sg of ['opnCmd', 'clsCmd']) if (ieds[relay][sg]) { ieds[relay][sg] = false; dataChanged(relay, sg, t) }
+    const rcb = rcbs.find(r => r.id === c.rcb)
+    const te = t + serverS
+    q.push(te, () => ctlSend(c, 'CmdTerm+', te, tg => ctlEnd(c, tg, 'done', null, `${rcb.client}: command termination from ${c.ied}: ${c.breaker} ${DBPOS_TEXT[pos]}, the ${s.op} is complete`)))
+  }
+
   // The station bus path changes only at network cut times
   const mmsCutTimes = [...new Set(netCuts)].filter(t => t >= WARM_T).sort((a, b) => a - b)
   for (const rcb of rcbs) {
@@ -506,6 +677,8 @@ export function simulate(baseConfig, scenarioIn) {
         if (m.assoc === 'up') {
           for (const r of m.queued) q.push(t + tr, () => deliver(rcb, r, t + tr))
           m.queued = []
+          for (const p of m.pend) q.push(t + tr, () => p.go(t + tr))
+          m.pend = []
           syncMms(rcb)
         } else if (m.assoc === 'lost') {
           m.assoc = 'connecting'
@@ -644,6 +817,12 @@ export function simulate(baseConfig, scenarioIn) {
   })
 
   const faultLine = cfg.script?.faultLine ?? 'AB'
+  // The breakers of the faulted zone's relays (a line or transformer bay has one)
+  const faultBkrs = () => cfg.ieds.filter(d => d.kind === 'relay' && (d.protects ?? d.line ?? d.bay) === faultLine)
+    .map(r => cfg.ieds.find(d => d.kind === 'breaker' && d.bay === r.bay)?.id).filter(Boolean)
+  const cmd = scenario.control
+  const cmdCtl = cmd && ctls.find(c => c.ied === cmd.ied)
+  if (cmdCtl && OP[cmd.op]) q.push(cmd.at ?? 0.5, () => ctlStart(cmdCtl, cmd.op, cmd.at ?? 0.5))
   const FAULT_NAME = { BUSA: 'bus A', XFMRAT: 'transformer A–T' }
   q.push(0, () => { fault = true; log(0, 'fault', `Fault on ${FAULT_NAME[faultLine] ?? `line ${faultLine[0]}–${faultLine[1]}`}`, null) })
   for (const r of cfg.ieds.filter(d => d.kind === 'relay' && (d.protects ?? d.line ?? d.bay) === faultLine)) {
@@ -704,7 +883,8 @@ export function simulate(baseConfig, scenarioIn) {
   for (const fr of shown) for (const rx of Object.values(fr.rx)) if (rx.fate === 'pending') rx.fate = 'inFlight'
   const outcome = judge(cfg, events, shown)
   mmsNotes(cfg, events, reports, outcome)
-  return { events, frames: shown, outcome, startT: START_T, endT: END_T, config: cfg, profile: prof, svHealth, reports: reports.filter(r => r.tSent >= START_T - EPS) }
+  ctlNotes(cfg, events, ctlMsgs, outcome)
+  return { events, frames: shown, outcome, startT: START_T, endT: END_T, config: cfg, profile: prof, svHealth, reports: reports.filter(r => r.tSent >= START_T - EPS), controls: ctlMsgs }
 }
 
 export function valueText(frame) {
@@ -863,6 +1043,18 @@ function mmsNotes(cfg, events, reports, out) {
   else if (rep.fate === 'buffer' && rep.tRx !== null) notes.push({ level: 'warn', text: `SCADA: ${out.relay}'s trip reached the gateway at ${fmtTime(rep.tRx)}, from the buffered report after the association came back: late, but with its original time stamp (${fmtTime(rep.tEvent)}). Nothing lost.` })
   else if (rep.fate === 'lost') notes.push({ level: 'bad', text: `SCADA never received ${out.relay}'s trip: ${rep.reason}. The general interrogation after reconnecting shows only the state now, so the trip is missing from SCADA's event list.` })
   else notes.push({ level: 'warn', text: `SCADA had not received ${out.relay}'s trip by the end of the run: ${rep.fate === 'buffer' ? 'it waits in the report buffer for the association to return' : 'TCP is still retransmitting'}.` })
+}
+
+// The operator's command, over MMS (feature controls)
+function ctlNotes(cfg, events, msgs, out) {
+  const start = events.find(e => e.kind === 'ctl' && e.text.startsWith('Operator:')) ?? events.find(e => e.kind === 'ctlFail' && e.text.startsWith('Operator:'))
+  if (!start) return
+  const end = events.find(e => (e.kind === 'ctlDone' || e.kind === 'ctlFail') && e.t >= start.t)
+  const what = start.text.split('. ')[0].replace('Operator: ', '')
+  out.ctl = { what, t0: start.t, tEnd: end?.t ?? null, ok: end?.kind === 'ctlDone' }
+  if (!end) out.notes.push({ level: 'warn', text: `Operator command (${what}): no result by the end of the run.` })
+  else if (end.kind === 'ctlDone') out.notes.push({ level: 'info', text: `Operator command (${what}): selected, operated and confirmed by command termination at ${fmtTime(end.t)}, ${fmtDur(end.t - start.t)} after the operator's select.` })
+  else out.notes.push({ level: 'warn', text: `Operator command (${what}) failed at ${fmtTime(end.t)}: ${end.text.replace(/^[^:]+: /, '')}.` })
 }
 
 // Outcome for a relay that trips several breakers (bus differential)

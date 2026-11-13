@@ -4,7 +4,7 @@
 // { id, track, title, zoom: 'trip' | 'bf' | 'heartbeats', setup?(cfg), scenario,
 //   intro, watch[], tryIt[], takeaway, expect: { verdict } }
 
-export const TRACKS = ['GOOSE basics', 'Test mode', 'Two bays', 'Redundancy', 'Sampled Values', 'Transformer and bus', 'Time sync', 'Station bus']
+export const TRACKS = ['GOOSE basics', 'Test mode', 'Two bays', 'Redundancy', 'Sampled Values', 'Transformer and bus', 'Time sync', 'Station bus', 'Controls']
 
 export const LESSONS = [
   {
@@ -438,6 +438,64 @@ export const LESSONS = [
       'Also make SBB fail at the fault: now both LANs are down, and the gateway loses its associations at 1.000 s, as in the single-network lessons.',
     ],
     takeaway: 'Station-bus PRP keeps SCADA’s view intact through a single network failure, the same way process-bus PRP keeps trips intact. The cost of losing a LAN is only visible in the PRP alarms.',
+    expect: { verdict: 'delivered' },
+  },
+  {
+    id: 'ctl-sbo',
+    track: 'Controls',
+    title: 'Closing a breaker from SCADA',
+    zoom: 'control',
+    setup: cfg => { cfg.features.controls = true },
+    scenario: { control: { ied: '21-AB', op: 'close', at: 0.5 } },
+    intro: 'The fault on line A–B was transient: 52-AB opened at 52.0 ms and the fault went out with it. At 500 ms the operator closes 52-AB again from SCADA (time is compressed: a real operator takes longer). The command is select before operate, with enhanced security.',
+    watch: [
+      'At 500 ms the gateway sends Select with value (SBOw) to 21-AB’s breaker control, CSWI1. 21-AB confirms at 505.0 ms (illustrative server time 5 ms). Nothing moves yet: the select reserves the control, so no one else can operate it meanwhile.',
+      'The operator confirms 200 ms later (illustrative) and the gateway sends Operate at 705.1 ms. 21-AB checks interlocking: it sees 52-AB open over GOOSE and its trip has reset. At 710.1 ms it accepts and publishes its Control GOOSE (CSWI1.OpCls) on the process bus. 52-AB energizes its close coil at 712.2 ms.',
+      'The contacts make at 795.5 ms (5 cycles, illustrative) and Position reads closed at 800.5 ms. 21-AB sees it at 802.5 ms and sends the command termination, which reaches the gateway at 807.6 ms: the close is complete and confirmed.',
+    ],
+    tryIt: [
+      'Tap the gateway and choose “Open 52-AB” instead: 21-AB refuses the select at once (Position-reached), because 52-AB is already open.',
+      'Switch to the Heartbeats view: the Control GOOSE is published all the time, like the trip. The command is a change of state in it, and 52-AB supervises it like any other subscription.',
+    ],
+    takeaway: 'Select before operate turns a command into a checked conversation: select, confirm, operate, then a command termination that reports the result. The client/server part ends at the relay. The relay commands the breaker over GOOSE on the process bus, the same way it trips it.',
+    expect: { verdict: 'delivered' },
+  },
+  {
+    id: 'ctl-interlock',
+    track: 'Controls',
+    title: 'Interlocked: the relay can’t see the breaker',
+    zoom: 'control',
+    setup: cfg => { cfg.features.controls = true },
+    scenario: { control: { ied: '21-AB', op: 'close', at: 0.5 }, subWrong: { '21-AB.Pos': 'appid' } },
+    intro: 'The same command, but 21-AB’s subscription to 52-AB’s Position GOOSE was engineered with the wrong APPID. Protection doesn’t need it: 52-AB still opens at 52.0 ms on the trip.',
+    watch: [
+      '21-AB’s Position subscription has been in alarm since before the run, and SCADA has never received the breaker position: the SCADA view shows the breaker as —.',
+      'The select is confirmed at 505.0 ms. In this model the select checks only the mode and whether the breaker is already in position.',
+      'At 710.1 ms 21-AB refuses the Operate: Blocked-by-interlocking. Without a valid position from 52-AB, its interlocking can’t release, so 52-AB stays open. The gateway has the refusal at 710.2 ms.',
+    ],
+    tryIt: [
+      'Tap 21-AB and set its Position subscription back to correct: the close goes through, as in the previous lesson.',
+    ],
+    takeaway: 'Interlocking in a digital substation runs on GOOSE: the relay knows the breaker’s position only from the breaker IED’s messages. When that subscription fails, the interlock fails safe and blocks the command rather than guess.',
+    expect: { verdict: 'delivered' },
+  },
+  {
+    id: 'ctl-outage',
+    track: 'Controls',
+    title: 'The command that never arrived',
+    zoom: 'heartbeats',
+    setup: cfg => { cfg.features.controls = true },
+    scenario: { control: { ied: '21-AB', op: 'close', at: 0.5 }, linkDown: { L3: 0 }, linkUp: { L3: 1.5 } },
+    intro: 'Station-bus link L3 fails at the fault and comes back 1.5 s later, as in “The station bus drops”. At 500 ms the operator tries to close 52-AB.',
+    watch: [
+      'The gateway still has its association with 21-AB (it gives up only after 1 s without an answer), so it sends the select. TCP keeps resending it, and no answer comes.',
+      'At 1.000 s the association is lost, and the command with it: the gateway reports it failed. Nothing operated, and 52-AB stays open.',
+      'L3 is back at 1.5 s, and at 1.800 s the association returns and the buffered reports bring SCADA up to date. The command is not repeated: the operator has to give it again.',
+    ],
+    tryIt: [
+      'Tap L3 and set it to fail 2 s before the fault: the association is already lost at 500 ms, and the gateway refuses the command at once.',
+    ],
+    takeaway: 'A command needs the whole conversation. When the station bus fails, the command fails safe: the breaker does not move, and SCADA says so. Unlike a report, a command is never buffered and sent later.',
     expect: { verdict: 'delivered' },
   },
 ]

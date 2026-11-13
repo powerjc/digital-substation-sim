@@ -19,14 +19,14 @@ const ms = s => Math.round(s * 1e5) / 100 // s → ms, 2 decimals
 const tripFrames = r => r.frames.filter(f => f.gocb === 'AB.Trip')
 
 describe('schema', () => {
-  it('is at v9 and migrates a current config unchanged', () => {
+  it('is at v10 and migrates a current config unchanged', () => {
     const c = defaultConfig()
     expect(c.version).toBe(SCHEMA_VERSION)
-    expect(SCHEMA_VERSION).toBe(9)
+    expect(SCHEMA_VERSION).toBe(10)
     expect(migrateConfig(c)).toEqual(c)
     expect(migrateConfig(null)).toEqual(defaultConfig())
   })
-  it('migrates a v1 config to v9: features, script, BF timer, station / process bus, PRP, RSTP, SV, transformer bay, PTP, MMS', () => {
+  it('migrates a v1 config to v10: features, script, BF timer, station / process bus, PRP, RSTP, SV, transformer bay, PTP, MMS, controls', () => {
     const v1 = defaultConfig()
     v1.version = 1
     delete v1.script
@@ -36,15 +36,16 @@ describe('schema', () => {
     v1.switches = [{ id: 'SW1', label: 'Bay switch', ports: { 1: { vlans: [10] }, 2: { vlans: [10] } } }]
     v1.links = [{ id: 'L1', a: '21-AB', b: 'SW1:1' }, { id: 'L2', a: 'SW1:2', b: '52-AB' }]
     const m = migrateConfig(v1)
-    expect(m.version).toBe(9)
-    expect(m.mms).toEqual({ serverMs: 5, assocTimeoutS: 1, reconnectS: 0.3 })
+    expect(m.version).toBe(10)
+    expect(m.mms).toEqual({ serverMs: 5, assocTimeoutS: 1, reconnectS: 0.3, operatorS: 0.2, operTimeoutS: 1 })
+    expect(m.timing.breakerCloseCycles).toBe(5)
     expect(m.ptp).toEqual({ failoverS: 3, muHoldoverS: 2, gmHoldoverS: 100 })
     expect(m.timing.svLossMs).toBe(1)
     expect(m.network.redundancy).toBe('prp')
     expect(m.network.rstpRecoveryMs).toBe(50)
     expect(m.switches.map(x => x.id)).toEqual(['PB', 'SB'])
     expect(m.network.prpLifeCheckMs).toBe(2000)
-    expect(m.features).toEqual({ networkDetail: true, testMode: false, secondBay: false, redundancy: false, sampledValues: false, transformerBay: false, timeSync: false, mms: false })
+    expect(m.features).toEqual({ networkDetail: true, testMode: false, secondBay: false, redundancy: false, sampledValues: false, transformerBay: false, timeSync: false, mms: false, controls: false })
     expect(m.script).toEqual({ faultLine: 'AB' })
     expect(m.timing.bfCycles).toBe(8)
     expect(m.ieds.find(d => d.id === '21-AB').line).toBe('AB')
@@ -789,4 +790,126 @@ describe('lesson figures: station bus (MMS)', () => {
     const both = simulate(stationConfig(c), { switchDown: { SBA: 0, SBB: 0 } })
     expect(fmtTime(ev(both, 'mmsLost').t)).toBe('1.000 s')
   })
+})
+
+describe('MMS controls (feature controls)', () => {
+  const ctlCfg = (...fs) => { const c = defaultConfig(); c.features.controls = true; for (const f of fs) c.features[f] = true; return stationConfig(c) }
+  const close = { control: { ied: '21-AB', op: 'close', at: 0.5 } }
+  it('with controls off, nothing changes: no ctls, no Control GOOSE, no controls messages', () => {
+    const c = defaultConfig(); c.features.mms = true
+    const s = stationConfig(c)
+    expect(s.ctls).toBeUndefined()
+    expect(s.gocbs.map(g => g.id)).toEqual(['AB.Trip', 'AB.Pos'])
+    expect(simulate(s, close).controls).toEqual([])
+  })
+  it('controls bring MMS, a Control GOOSE per bay and a breaker subscription', () => {
+    const s = ctlCfg('secondBay')
+    expect(s.rcbs).toHaveLength(2)
+    expect(s.ctls.map(c => `${c.ied}→${c.breaker}`)).toEqual(['21-AB→52-AB', '21-AX→52-AX'])
+    expect(s.gocbs.filter(g => g.label === 'Control').map(g => g.id)).toEqual(['AB.Ctl', 'AX.Ctl'])
+    expect(s.subscriptions.filter(x => x.use === 'control').map(x => x.id)).toEqual(['52-AB.Ctl', '52-AX.Ctl'])
+    expect(ctlCfg('transformerBay').ctls.map(c => c.breaker)).toEqual(['52-AB', '52-AX', '52-AT'])
+  })
+  it('without a command the protection figures are those of MMS alone; the control subscription stays healthy', () => {
+    const r = simulate(ctlCfg(), {})
+    expect(fmtTime(r.outcome.coilT)).toBe('18.7 ms')
+    expect(fmtTime(r.outcome.openT)).toBe('52.0 ms')
+    expect(r.controls).toEqual([])
+    expect(r.events.at(-1).state.subs['52-AB.Ctl'].status).toBe('healthy')
+    expect(ev(r, 'faultGone')).toBeUndefined()
+  })
+  it('a close runs select, operate, close coil, command termination; the fault goes out when 52-AB opens', () => {
+    const r = simulate(ctlCfg(), close)
+    expect(r.controls.map(m => m.kind)).toEqual(['Select', 'Select+', 'Operate', 'Operate+', 'CmdTerm+'])
+    expect(ev(r, 'faultGone').t).toBe(ev(r, 'open', '52-AB').t)
+    expect(ev(r, 'closeCoil', '52-AB')).toBeTruthy()
+    const end = r.events.at(-1).state
+    expect(end.ieds['52-AB'].contactsClosed).toBe(true)
+    expect(end.ieds['21-AB'].clsCmd).toBe(false)
+    expect(end.ctl['21-AB'].phase).toBe('done')
+    expect(end.scada['21-AB'].pos).toBe('on')
+    expect(r.outcome.verdict).toBe('delivered')
+    expect(r.outcome.ctl.ok).toBe(true)
+  })
+  it('opening a breaker already open is refused at the select (Position-reached)', () => {
+    const r = simulate(ctlCfg(), { control: { ied: '21-AB', op: 'open', at: 0.5 } })
+    expect(r.controls.map(m => m.kind)).toEqual(['Select', 'Select−'])
+    expect(r.controls[1].cause).toBe('Position-reached')
+    expect(ev(r, 'ctlFail').text).toMatch(/already open/)
+  })
+  it('opening the healthy bay A–X works through 21-AX and its Control GOOSE', () => {
+    const r = simulate(ctlCfg('secondBay'), { control: { ied: '21-AX', op: 'open', at: 0.5 } })
+    expect(ev(r, 'coil', '52-AX').text).toMatch(/open command from 21-AX/)
+    expect(r.events.at(-1).state.ieds['52-AX'].contactsClosed).toBe(false)
+    expect(r.controls.at(-1).kind).toBe('CmdTerm+')
+    expect(r.outcome.verdict).toBe('delivered')
+  })
+  it('a relay in test mode refuses a normal command (Blocked-by-Mode)', () => {
+    const r = simulate(ctlCfg('testMode'), { ...close, iedMode: { '21-AB': 'test' } })
+    expect(r.controls[1]).toMatchObject({ kind: 'Select−', cause: 'Blocked-by-Mode' })
+  })
+  it('a stuck breaker: the command ends with Time-limit-over after the operate timeout', () => {
+    const r = simulate(ctlCfg('secondBay'), { control: { ied: '21-AX', op: 'open', at: 0.5 }, breakerStuck: ['52-AX'] })
+    expect(r.controls.at(-1)).toMatchObject({ kind: 'CmdTerm−', cause: 'Time-limit-over' })
+    expect(r.controls.at(-1).tSent - r.controls.find(m => m.kind === 'Operate+').tSent).toBeCloseTo(1, 6)
+  })
+  it('no association at the command: refused at the gateway, nothing sent', () => {
+    const r = simulate(ctlCfg(), { ...close, linkDown: { L3: -2 } })
+    expect(r.controls).toEqual([])
+    expect(ev(r, 'ctlFail').text).toMatch(/no association/)
+  })
+  it('station-bus PRP: one LAN down, the command goes through on the other', () => {
+    const r = simulate(ctlCfg('redundancy'), { ...close, linkDown: { L3A: 0 } })
+    expect(r.controls.map(m => m.kind)).toEqual(['Select', 'Select+', 'Operate', 'Operate+', 'CmdTerm+'])
+    expect(r.controls.every(m => m.fate === 'onTime')).toBe(true)
+  })
+})
+
+describe('lesson figures: controls', () => {
+  const lesson = id => { const l = LESSONS.find(x => x.id === id); const c = defaultConfig(); l.setup?.(c); return simulate(stationConfig(c), l.scenario) }
+  const msg = (r, k) => r.controls.find(m => m.kind === k)
+  it('Closing from SCADA: 52.0 ms open; select 500 → 505.0; operate 705.1; accepted 710.1; close coil 712.2; make 795.5; closed 800.5; seen 802.5; termination 807.6 ms', () => {
+    const r = lesson('ctl-sbo')
+    expect(fmtTime(r.outcome.openT)).toBe('52.0 ms')
+    expect(fmtTime(msg(r, 'Select').tSent)).toBe('500.0 ms')
+    expect(fmtTime(msg(r, 'Select+').tSent)).toBe('505.0 ms')
+    expect(fmtTime(msg(r, 'Operate').tSent)).toBe('705.1 ms')
+    expect(fmtTime(msg(r, 'Operate+').tSent)).toBe('710.1 ms')
+    expect(fmtTime(ev(r, 'closeCoil', '52-AB').t)).toBe('712.2 ms')
+    expect(fmtTime(ev(r, 'close', '52-AB').t)).toBe('795.5 ms')
+    expect(fmtTime(r.events.find(e => e.kind === 'pos' && e.dev === '52-AB' && /closed/.test(e.text)).t)).toBe('800.5 ms')
+    expect(fmtTime(r.events.find(e => e.kind === 'seen' && e.t > 0.5 && /closed/.test(e.text)).t)).toBe('802.5 ms')
+    expect(fmtTime(msg(r, 'CmdTerm+').tRx)).toBe('807.6 ms')
+    expect(fmtTime(ev(r, 'ctlDone').t)).toBe('807.6 ms')
+  })
+  it('Interlocked: Position subscription in alarm from the start, select 505.0, refused 710.1, gateway 710.2; breaker stays open', () => {
+    const r = lesson('ctl-interlock')
+    expect(fmtTime(r.outcome.openT)).toBe('52.0 ms')
+    expect(ev(r, 'alarm', '21-AB').t).toBe(START_T)
+    expect(r.events.at(-1).state.scada['21-AB'].pos).toBeNull()
+    expect(fmtTime(msg(r, 'Select+').tSent)).toBe('505.0 ms')
+    expect(msg(r, 'Operate−').cause).toBe('Blocked-by-interlocking')
+    expect(fmtTime(msg(r, 'Operate−').tSent)).toBe('710.1 ms')
+    expect(fmtTime(msg(r, 'Operate−').tRx)).toBe('710.2 ms')
+    expect(r.events.at(-1).state.ieds['52-AB'].contactsClosed).toBe(false)
+  })
+  it('Interlocked, try-this: subscription fixed, the close goes through', () => {
+    const l = LESSONS.find(x => x.id === 'ctl-interlock'); const c = defaultConfig(); l.setup(c)
+    const r = simulate(stationConfig(c), { control: l.scenario.control })
+    expect(r.controls.at(-1).kind).toBe('CmdTerm+')
+  })
+  it('The command that never arrived: select held by TCP, lost with the association at 1.000 s; back 1.800 s; breaker stays open', () => {
+    const r = lesson('ctl-outage')
+    expect(msg(r, 'Select')).toMatchObject({ fate: 'lost', tRx: null })
+    expect(r.controls).toHaveLength(1)
+    expect(fmtTime(ev(r, 'ctlFail').t)).toBe('1.000 s')
+    expect(fmtTime(ev(r, 'mmsOk').t)).toBe('1.800 s')
+    expect(r.events.at(-1).state.ieds['52-AB'].contactsClosed).toBe(false)
+    expect(r.events.at(-1).state.ctl['21-AB'].phase).toBe('failed')
+  })
+  it('The command that never arrived, try-this: L3 down 2 s before the fault, refused at once at 500 ms', () => {
+    const r = simulate(ctlCfgL(), { control: { ied: '21-AB', op: 'close', at: 0.5 }, linkDown: { L3: -2 } })
+    expect(fmtTime(ev(r, 'ctlFail').t)).toBe('500.0 ms')
+  })
+  const ctlCfgL = () => { const c = defaultConfig(); c.features.controls = true; return stationConfig(c) }
 })
